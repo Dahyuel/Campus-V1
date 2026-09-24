@@ -1,0 +1,6 @@
+{
+  "name": "Nilebyte Student Portal",
+  "description": "Multi-role academic operations portal for Campus by Nilebyte with dedicated dashboards for Faculty, University Admin, Department Head, Dean, and Students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

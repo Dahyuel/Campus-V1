@@ -1,0 +1,19 @@
+→ Read server/db/migrate.ts [offset=24, limit=50]
+
+** for all demo accounts:** ChangeThisDemoPassword123! (value of DEMO_SEED_PASSWORD in .env)
+
+Primary users (from server/db/migrate.ts:24):
+
+| Username | Role | Email |
+| :--- | :--- | :--- |
+| student | Student | ahmed.dahy@nilebyte.edu (mailto:ahmed.dahy@nilebyte.edu) |
+| faculty | Faculty | faculty@nilebyte.edu (mailto:faculty@nilebyte.edu) |
+| admin | Admin | admin@nilebyte.edu (mailto:admin@nilebyte.edu) |
+| depthead | Dept. Head | depthead@nilebyte.edu (mailto:depthead@nilebyte.edu) |
+| dean | Dean | dean@nilebyte.edu (mailto:dean@nilebyte.edu) |
+
+Additional seeded accounts (same password): students layla.ahmed, sara.mahmoud, nour.ali, youssef.samir, hana.soliman, ahmed.tarek, layla.ezzat, khaled.mostafa, karim.mansour, omar.tarek, dina.kamal, omar.hassan; faculty sara_nour, youssef, omar_farid, nour_hassan, karim_gamal, dr_tarek_fouad, eng_hassan_ali; admins rania.kamal, eman, hassan.ali.
+
+You can log in with either the username or email.
+
+■ Build · DeepSeek Instant · 11.2s
