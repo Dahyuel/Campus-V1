@@ -18,10 +18,26 @@ separate `./backend/` and `./frontend/` directories; those do not exist.
 **Prerequisites:** Node.js 20+, Docker (for Postgres + Redis)
 
 1. `cp .env.example .env` and fill in strong secrets (see required keys below).
-2. `docker compose up -d`      # starts postgres:16 (5432) + redis:7 (6379) + minio + rabbitmq + qdrant
-3. `npm install`               # root install covers server + src
-4. `npm run migrate`           # applies migrations and seeds demo data
-5. `npm run dev:all`           # Fastify on :4000, Vite on :3000
+2. Log in to Docker for quad.io **before** running the script:
+   ```bash
+   docker login
+   ```
+3. `./development.sh`           # one-shot script: starts infra, migrates, and runs backend + frontend
+
+The `development.sh` script will:
+
+- Kill any existing backend (:4000) / frontend (:3000) instances
+- Start Postgres + Redis via `docker compose up -d`
+- Wait until Postgres + Redis are ready
+- Apply migrations and seed demo data (`npm run migrate`)
+- Start both services (`npm run dev:all`) — Fastify on :4000, Vite on :3000
+
+To run services manually instead:
+
+1. `docker compose up -d`      # starts postgres:16 (5432) + redis:7 (6379) + minio + rabbitmq + qdrant
+2. `npm install`               # root install covers server + src
+3. `npm run migrate`           # applies migrations and seeds demo data
+4. `npm run dev:all`           # Fastify on :4000, Vite on :3000
 
 `npm run dev` runs only the backend; `npm run dev:client` runs only the frontend.
 
