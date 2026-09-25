@@ -1109,7 +1109,7 @@ async function seedTA(): Promise<void> {
     { name: 'Advanced Algorithms', code: 'CS-601', semester: 'Fall 2023', credits: 3, grade: 'A', status: 'COMPLETED' },
     { name: 'Research Methodology', code: 'RS-501', semester: 'Fall 2023', credits: 3, grade: 'A-', status: 'COMPLETED' },
     { name: 'Machine Learning Theory', code: 'CS-611', semester: 'Spring 2024', credits: 3, grade: 'B+', status: 'COMPLETED' },
-    { name: 'Graduate Seminar', code: 'GS-501', semester: 'Fall 2024', credits: 1, grade: 'In Progress', status: 'IN PROGRESS' },
+    { name: 'Graduate Seminar', code: 'GS-501', semester: 'Fall 2024', credits: 1, grade: null, status: 'IN PROGRESS' },
   ];
   for (const c of PG) {
     await pool.query(
