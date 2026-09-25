@@ -1,7 +1,8 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { query } from '../db/client.js';
 import { redis } from '../redis.js';
@@ -21,6 +22,13 @@ const ALLOWED_MATERIAL_TYPES = [
   'Other',
 ];
 const ALLOWED_FILE_EXTENSIONS = ['.pdf', '.docx', '.pptx', '.zip', '.mp4'];
+const CONTENT_TYPES: Record<string, string> = {
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.zip': 'application/zip',
+  '.mp4': 'video/mp4',
+};
 
 function qrKey(token: string): string {
   return `qr:${token}`;
@@ -355,14 +363,19 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
     }
 
     const key = `courses/${courseCode.toLowerCase()}/materials/${Date.now()}_${safeName}`;
-    await fastify.minio.send(
-      new PutObjectCommand({
-        Bucket: MATERIALS_BUCKET,
-        Key: key,
-        Body: buffer,
-        ContentType: 'application/octet-stream',
-      })
-    );
+    try {
+      await fastify.minio.send(
+        new PutObjectCommand({
+          Bucket: MATERIALS_BUCKET,
+          Key: key,
+          Body: buffer,
+          ContentType: CONTENT_TYPES[ext] ?? 'application/octet-stream',
+        })
+      );
+    } catch (err) {
+      fastify.log.error({ err }, 'material upload to storage failed');
+      return reply.status(503).send({ error: 'File storage is unavailable. Please try again later.' });
+    }
 
     const sizeMb = (buffer.length / (1024 * 1024)).toFixed(1);
     const inserted = await query<{ id: string; uploaded_at: string }>(
@@ -387,6 +400,30 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
       uploadDate: formatDateLabel(inserted[0].uploaded_at),
       size: `${sizeMb} MB`,
     });
+  });
+
+  fastify.get('/materials/:materialId/url', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { materialId } = request.params as { materialId: string };
+    const rows = await query<{ file_key: string; file_name: string }>(
+      `SELECT cm.file_key, cm.file_name FROM course_materials cm
+       JOIN faculty_course_assignments fca ON fca.course_id = cm.course_id
+       WHERE cm.id = $1 AND fca.faculty_id = $2 LIMIT 1`,
+      [materialId, facultyId]
+    );
+    if (!rows[0]) {
+      return reply.status(404).send({ error: 'Material not found' });
+    }
+    const url = await getSignedUrl(
+      fastify.minio,
+      new GetObjectCommand({
+        Bucket: MATERIALS_BUCKET,
+        Key: rows[0].file_key,
+        ResponseContentDisposition: `inline; filename="${rows[0].file_name}"`,
+      }),
+      { expiresIn: 300 }
+    );
+    return reply.status(200).send({ url });
   });
 
   fastify.delete('/materials/:materialId', async (request, reply) => {

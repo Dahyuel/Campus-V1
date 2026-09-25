@@ -87,6 +87,9 @@ export const useUploadMaterial = () => {
   });
 };
 
+export const getMaterialUrl = (materialId: string): Promise<string> =>
+  api.get(`/faculty/materials/${materialId}/url`).then((r) => r.data.url);
+
 export const useDeleteMaterial = () => {
   const qc = useQueryClient();
   return useMutation({

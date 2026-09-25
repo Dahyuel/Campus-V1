@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   Users,
   AlertCircle,
@@ -7,14 +7,26 @@ import {
   Upload,
   Eye,
   X,
-  ExternalLink
+  ExternalLink,
+  Trash2
 } from 'lucide-react';
 import {
   FacultyCourseItem,
   CourseMaterialRow
 } from '../../data/facultyMockData';
-import { useFacultyCourses, useFacultyMaterials, useUploadMaterial } from '../../hooks/useFacultyData';
+import {
+  useFacultyCourses,
+  useFacultyMaterials,
+  useUploadMaterial,
+  useDeleteMaterial,
+  getMaterialUrl,
+} from '../../hooks/useFacultyData';
 import { TabId } from '../../types';
+
+// Must match ALLOWED_MATERIAL_TYPES / ALLOWED_FILE_EXTENSIONS in server/routes/faculty.ts
+const MATERIAL_TYPES = ['PDF Lecture Slides', 'Assignment PDF', 'Lab Archive Code', 'Video Lecture', 'Other'];
+const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.pptx', '.zip', '.mp4'];
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 interface FacultyCoursesTabProps {
   searchQuery?: string;
@@ -28,19 +40,21 @@ export const FacultyCoursesTab: React.FC<FacultyCoursesTabProps> = ({
   const { data: coursesData, isLoading } = useFacultyCourses();
   const { data: materialsData } = useFacultyMaterials();
   const uploadMutation = useUploadMaterial();
+  const deleteMutation = useDeleteMaterial();
   const FACULTY_COURSES: FacultyCourseItem[] = coursesData ?? [];
-  const [materials, setMaterials] = useState<CourseMaterialRow[]>([]);
-  React.useEffect(() => {
-    if (materialsData) setMaterials(materialsData);
-  }, [materialsData]);
+  const materials: CourseMaterialRow[] = materialsData ?? [];
   const [selectedMaterial, setSelectedMaterial] = useState<CourseMaterialRow | null>(null);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isOpening, setIsOpening] = useState(false);
 
   // Upload form state
-  const [newTitle, setNewTitle] = useState('');
-  const [newCourse, setNewCourse] = useState('Data Structures');
-  const [newType, setNewType] = useState('PDF Lecture Slides');
+  const [newFile, setNewFile] = useState<File | null>(null);
+  const [newCourseCode, setNewCourseCode] = useState('');
+  const [newType, setNewType] = useState(MATERIAL_TYPES[0]);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (isLoading) {
     return (
@@ -66,25 +80,73 @@ export const FacultyCoursesTab: React.FC<FacultyCoursesTabProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  const openUploadModal = () => {
+    setNewFile(null);
+    setNewCourseCode(FACULTY_COURSES[0]?.code ?? '');
+    setNewType(MATERIAL_TYPES[0]);
+    setUploadError(null);
+    setIsUploadModalOpen(true);
+  };
+
+  const pickFile = (file: File | undefined) => {
+    if (!file) return;
+    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      setUploadError(`Unsupported file type. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`);
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadError('File is larger than 50 MB.');
+      return;
+    }
+    setUploadError(null);
+    setNewFile(file);
+  };
+
   const handleUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim()) return;
-    const formData = new FormData();
-    formData.append('courseCode', newCourse === 'Data Structures' ? 'CS-301' : newCourse);
-    formData.append('materialType', newType);
-    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]');
-    if (fileInput?.files?.[0]) {
-      formData.append('file', fileInput.files[0]);
-    } else {
-      formData.append('file', new Blob([newTitle], { type: 'application/pdf' }), newTitle.endsWith('.pdf') ? newTitle : `${newTitle}.pdf`);
+    if (!newFile || !newCourseCode) {
+      setUploadError('Choose a file to upload.');
+      return;
     }
+    const formData = new FormData();
+    formData.append('courseCode', newCourseCode);
+    formData.append('materialType', newType);
+    formData.append('file', newFile);
     try {
       await uploadMutation.mutateAsync(formData);
       setIsUploadModalOpen(false);
-      setNewTitle('');
       showToast('Material uploaded successfully!');
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setUploadError(msg ?? 'Upload failed. Please try again.');
+    }
+  };
+
+  const handleOpenMaterial = async (mat: CourseMaterialRow) => {
+    // Open the tab synchronously so pop-up blockers allow it, then point it at the file
+    const tab = window.open('', '_blank');
+    setIsOpening(true);
+    try {
+      const url = await getMaterialUrl(mat.id);
+      if (tab) tab.location.href = url;
+      else window.location.href = url;
     } catch {
-      showToast('Upload failed. Please try again.');
+      tab?.close();
+      showToast('Could not open the file. File storage may be unavailable.');
+    } finally {
+      setIsOpening(false);
+    }
+  };
+
+  const handleDeleteMaterial = async (mat: CourseMaterialRow) => {
+    if (!window.confirm(`Delete "${mat.fileName}"? Students will no longer be able to access it.`)) return;
+    try {
+      await deleteMutation.mutateAsync(mat.id);
+      setSelectedMaterial(null);
+      showToast('Material deleted.');
+    } catch {
+      showToast('Delete failed. Please try again.');
     }
   };
 
@@ -285,7 +347,7 @@ export const FacultyCoursesTab: React.FC<FacultyCoursesTabProps> = ({
 
           <button
             id="btn-upload-new-material"
-            onClick={() => setIsUploadModalOpen(true)}
+            onClick={openUploadModal}
             className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer"
           >
             <Upload className="w-3.5 h-3.5" />
@@ -380,14 +442,20 @@ export const FacultyCoursesTab: React.FC<FacultyCoursesTabProps> = ({
 
             <div className="mt-5 flex gap-2">
               <button
-                onClick={() => {
-                  showToast(`Opened ${selectedMaterial.fileName} in viewer`);
-                  setSelectedMaterial(null);
-                }}
-                className="flex-1 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                onClick={() => handleOpenMaterial(selectedMaterial)}
+                disabled={isOpening}
+                className="flex-1 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
                 <span>Open Document</span>
+              </button>
+              <button
+                onClick={() => handleDeleteMaterial(selectedMaterial)}
+                disabled={deleteMutation.isPending}
+                className="px-4 py-2.5 border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete</span>
               </button>
               <button
                 onClick={() => setSelectedMaterial(null)}
@@ -418,34 +486,21 @@ export const FacultyCoursesTab: React.FC<FacultyCoursesTabProps> = ({
             </div>
 
             <form onSubmit={handleUploadSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Document Title / File Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. CS301_Lecture09_GraphTraversal.pdf"
-                  value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-hidden focus:border-[#3256a8] focus:ring-1 focus:ring-[#3256a8]"
-                />
-              </div>
-
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
                     Course Target
                   </label>
                   <select
-                    value={newCourse}
-                    onChange={(e) => setNewCourse(e.target.value)}
+                    value={newCourseCode}
+                    onChange={(e) => setNewCourseCode(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-hidden focus:border-[#3256a8]"
                   >
-                    <option value="Data Structures">Data Structures (CS-301)</option>
-                    <option value="Mathematics">Mathematics (MATH-201)</option>
-                    <option value="Artificial Intelligence">Artificial Intelligence (CS-401)</option>
-                    <option value="Networks">Networks (CS-303)</option>
+                    {FACULTY_COURSES.map((c) => (
+                      <option key={c.id} value={c.code}>
+                        {c.name} ({c.code})
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -458,26 +513,77 @@ export const FacultyCoursesTab: React.FC<FacultyCoursesTabProps> = ({
                     onChange={(e) => setNewType(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-hidden focus:border-[#3256a8]"
                   >
-                    <option value="PDF Lecture Slides">PDF Lecture Slides</option>
-                    <option value="Assignment PDF">Assignment PDF</option>
-                    <option value="Lab Archive Code">Lab Archive Code</option>
-                    <option value="Syllabus & Guide">Syllabus & Guide</option>
+                    {MATERIAL_TYPES.map((t) => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
                   </select>
                 </div>
               </div>
 
-              <div className="border-2 border-dashed border-slate-200 rounded-2xl p-6 text-center hover:border-[#3256a8] transition-colors cursor-pointer bg-slate-50/50">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ALLOWED_EXTENSIONS.join(',')}
+                className="hidden"
+                onChange={(e) => {
+                  pickFile(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => fileInputRef.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    fileInputRef.current?.click();
+                  }
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDragging(true);
+                }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragging(false);
+                  pickFile(e.dataTransfer.files?.[0]);
+                }}
+                className={`border-2 border-dashed rounded-2xl p-6 text-center transition-colors cursor-pointer ${
+                  isDragging ? 'border-[#3256a8] bg-blue-50/60' : 'border-slate-200 hover:border-[#3256a8] bg-slate-50/50'
+                }`}
+              >
                 <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                <p className="text-xs font-bold text-slate-700">Drag and drop file here, or browse</p>
-                <p className="text-[11px] text-slate-400 mt-1">Supports PDF, PPTX, ZIP up to 50MB</p>
+                {newFile ? (
+                  <>
+                    <p className="text-xs font-bold text-slate-900 break-all">{newFile.name}</p>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      {(newFile.size / (1024 * 1024)).toFixed(1)} MB · click to choose a different file
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xs font-bold text-slate-700">Drag and drop file here, or click to browse</p>
+                    <p className="text-[11px] text-slate-400 mt-1">PDF, DOCX, PPTX, ZIP or MP4 up to 50MB</p>
+                  </>
+                )}
               </div>
+
+              {uploadError && (
+                <p className="text-xs font-semibold text-rose-600 flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{uploadError}</span>
+                </p>
+              )}
 
               <div className="flex gap-2 pt-2">
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all cursor-pointer"
+                  disabled={!newFile || uploadMutation.isPending}
+                  className="flex-1 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Publish Material
+                  {uploadMutation.isPending ? 'Uploading…' : 'Publish Material'}
                 </button>
                 <button
                   type="button"
