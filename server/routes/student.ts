@@ -6,6 +6,7 @@ import { query } from '../db/client.js';
 import { redis } from '../redis.js';
 import { escapeHtml } from '../lib/sanitize.js';
 import { MATERIALS_BUCKET } from '../plugins/minio.js';
+import { haversineDistance } from '../lib/geo.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -347,16 +348,32 @@ export default async function studentRoutes(fastify: FastifyInstance): Promise<v
       [studentId]
     );
 
-    return reply.status(200).send({
-      courses: courses.map((c) => ({
-        id: c.id,
-        name: escapeHtml(c.name),
-        code: escapeHtml(c.code),
-        semester: escapeHtml(c.semester),
-        status: c.status,
-        isCurrent: c.status !== 'COMPLETED',
-      })),
-      materials: rows.map((r) => ({
+    const taRows = await query<{
+      id: string;
+      course_id: string;
+      course_name: string;
+      course_code: string;
+      semester: string;
+      file_name: string;
+      material_type: string;
+      section_label: string;
+      ta_name: string | null;
+      uploaded_at: string;
+      file_size: string | null;
+    }>(
+      `SELECT tm.id, tm.course_id, c.name AS course_name, c.code AS course_code,
+              c.semester, tm.file_name, tm.material_type, tm.section_label,
+              u.name AS ta_name, tm.uploaded_at, tm.file_size
+       FROM ta_materials tm
+       JOIN courses c ON c.id = tm.course_id
+       LEFT JOIN users u ON u.id = tm.ta_id
+       WHERE tm.course_id IN (SELECT course_id FROM enrollments WHERE student_id = $1)
+       ORDER BY c.code, tm.uploaded_at DESC`,
+      [studentId]
+    );
+
+    const merged = [
+      ...rows.map((r) => ({
         id: r.id,
         courseId: r.course_id,
         courseName: escapeHtml(r.course_name),
@@ -366,7 +383,36 @@ export default async function studentRoutes(fastify: FastifyInstance): Promise<v
         type: escapeHtml(r.material_type),
         uploadDate: formatDateLabel(r.uploaded_at),
         size: r.file_size ?? '',
+        source: 'faculty',
+        sectionLabel: null,
+        uploadedBy: null,
       })),
+      ...taRows.map((r) => ({
+        id: r.id,
+        courseId: r.course_id,
+        courseName: escapeHtml(r.course_name),
+        courseCode: escapeHtml(r.course_code),
+        semester: escapeHtml(r.semester),
+        fileName: escapeHtml(r.file_name),
+        type: escapeHtml(r.material_type),
+        uploadDate: formatDateLabel(r.uploaded_at),
+        size: r.file_size ?? '',
+        source: 'ta',
+        sectionLabel: r.section_label,
+        uploadedBy: escapeHtml(r.ta_name ?? ''),
+      })),
+    ];
+
+    return reply.status(200).send({
+      courses: courses.map((c) => ({
+        id: c.id,
+        name: escapeHtml(c.name),
+        code: escapeHtml(c.code),
+        semester: escapeHtml(c.semester),
+        status: c.status,
+        isCurrent: c.status !== 'COMPLETED',
+      })),
+      materials: merged,
     });
   });
 

@@ -20,6 +20,7 @@ const ROLE_LABELS: Record<SeededUser['roleType'], string> = {
   admin: 'Admin',
   'dept-head': 'Dept. Head — Computer Science',
   dean: 'Dean',
+  'teaching-assistant': 'Teaching Assistant - Computer Science',
 };
 
 function mapRow(row: UserRow): SeededUser {

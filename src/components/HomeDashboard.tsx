@@ -18,7 +18,8 @@ import {
   ChevronRight,
   ArrowUpRight
 } from 'lucide-react';
-import { useStudentDashboard } from '../hooks/useStudentData';
+import { useStudentDashboard, useStudentSchedule } from '../hooks/useStudentData';
+import { api } from '../lib/api';
 import { GradeSubject } from '../types';
 
 interface HomeDashboardProps {
@@ -35,6 +36,40 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   const initial = reduce ? false : 'hidden';
 
   const { data: dashData, isLoading } = useStudentDashboard();
+  const { data: scheduleData } = useStudentSchedule();
+  const [toast, setToast] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const liveClass = (scheduleData ?? []).find((item: { isLive?: boolean }) => item.isLive);
+
+  const handleScanAttendance = async () => {
+    const token = window.prompt('Enter the QR token shown by your faculty:');
+    if (!token) return;
+    let studentLat: number | undefined;
+    let studentLng: number | undefined;
+    if (navigator.geolocation) {
+      try {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
+        );
+        studentLat = pos.coords.latitude;
+        studentLng = pos.coords.longitude;
+      } catch {
+        // continue without location
+      }
+    }
+    try {
+      await api.post('/student/attendance/scan', { qrToken: token, studentLat, studentLng });
+      showToast('Attendance marked successfully!');
+    } catch (err) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Failed to mark attendance.';
+      showToast(msg);
+    }
+  };
 
   const GRADE_SUBJECTS: GradeSubject[] = dashData?.gradeSubjects ?? [];
   const ACTIVITIES = dashData?.activities ?? [];
@@ -82,6 +117,25 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
       animate="visible"
       className="space-y-7"
     >
+      {liveClass && (
+        <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-center justify-between">
+          <div>
+            <p className="font-medium text-rose-700 text-sm">Live Session: {liveClass.courseName | liveClass.courseCode}</p>
+            <p className="text-xs text-rose-500">Tap to mark your attendance</p>
+          </div>
+          <button
+            onClick={handleScanAttendance}
+            className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm rounded-lg font-medium transition-all"
+          >
+            Mark Attendance
+          </button>
+        </div>
+      )}
+
+      {toast && (
+        <div className="p-3 bg-slate-900 text-white text-sm rounded-lg">{toast}</div>
+      )}
+
       {/* BEGIN: StatCardsRow */}
       <section aria-label="Quick Performance Statistics" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Stat Card 1: GPA */}

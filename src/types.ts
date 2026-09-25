@@ -1,4 +1,4 @@
-export type RoleType = 'student' | 'faculty' | 'admin' | 'dept-head' | 'dean';
+export type RoleType = 'student' | 'faculty' | 'admin' | 'dept-head' | 'dean' | 'teaching-assistant';
 
 export type TabId = 
   | 'home' 
@@ -10,6 +10,9 @@ export type TabId =
   | 'grades' 
   | 'community' 
   | 'ai-tutor' 
+  | 'smart-schedule'
+  | 'todo-list'
+  | 'recordings'
   // Faculty
   | 'my-students'
   | 'attendance'
@@ -30,6 +33,13 @@ export type TabId =
   | 'academic-overview'
   | 'financial-overview'
   | 'university-analytics'
+  // Teaching Assistant
+  | 'ta-sections'
+  | 'ta-attendance'
+  | 'ta-grades'
+  | 'ta-students'
+  | 'ta-materials'
+  | 'ta-academic-record'
   // Common
   | 'messages' 
   | 'settings' 

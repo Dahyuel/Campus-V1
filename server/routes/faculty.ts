@@ -517,16 +517,22 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
 
   fastify.post('/attendance/session', async (request, reply) => {
     const facultyId = request.user!.id;
-    const { courseId, lectureLabel } = request.body as { courseId: string; lectureLabel: string };
+const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.body as {
+      courseId: string;
+      lectureLabel: string;
+      latitude?: number;
+      longitude?: number;
+      radiusMeters?: number;
+    };
     if (!courseId || !(await assertCourseOwned(facultyId, courseId))) {
       return reply.status(403).send({ error: 'Forbidden' });
     }
     const qrToken = randomUUID();
     const expiresAt = new Date(Date.now() + QR_TTL_SECONDS * 1000);
     const inserted = await query<{ id: string }>(
-      `INSERT INTO attendance_sessions (course_id, faculty_id, lecture_label, session_date, qr_token, qr_expires_at, is_open)
-       VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, true) RETURNING id`,
-      [courseId, facultyId, lectureLabel, qrToken, expiresAt.toISOString()]
+      `INSERT INTO attendance_sessions (course_id, faculty_id, lecture_label, session_date, qr_token, qr_expires_at, is_open, latitude, longitude, radius_meters)
+       VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, true, $6, $7, $8) RETURNING id`,
+      [courseId, facultyId, lectureLabel, qrToken, expiresAt.toISOString(), latitude ?? null, longitude ?? null, radiusMeters ?? 100]
     );
     const sessionId = inserted[0].id;
     await redis.setex(
@@ -683,16 +689,39 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
       [courseId, assessment.id]
     );
 
-    return reply.status(200).send(
-      rows.map((r) => ({
+    const taPendingRows = await query<{
+      id: string; ta_name: string | null; ta_code: string | null; section_label: string;
+      assessment_title: string; submitted_at: string; graded_count: string;
+    }>(
+      `SELECT tgs.id, u.name AS ta_name, u.code_id AS ta_code, tgs.section_label,
+              a.title AS assessment_title, tgs.submitted_at,
+              (SELECT COUNT(*) FROM grades g WHERE g.assessment_id = tgs.assessment_id AND g.status = 'SUBMITTED') AS graded_count
+       FROM ta_grade_submissions tgs
+       JOIN assessments a ON a.id = tgs.assessment_id
+       LEFT JOIN users u ON u.id = tgs.ta_id
+       WHERE tgs.course_id = $1 AND tgs.status = 'PENDING'`,
+      [courseId]
+    );
+
+    return reply.status(200).send({
+      entries: rows.map((r) => ({
         studentName: r.student_name,
         studentId: r.code_id,
         grade: r.grade === null ? null : Number(r.grade),
         outOf,
         percentage: r.grade === null ? null : Math.round((Number(r.grade) / outOf) * 100),
         status: r.grade === null ? 'MISSING' : r.status === 'RELEASED' ? 'RELEASED' : 'ENTERED',
-      }))
-    );
+      })),
+      taPendingSubmissions: taPendingRows.map((r) => ({
+        submissionId: r.id,
+        taName: r.ta_name ?? '',
+        taCode: r.ta_code ?? '',
+        sectionLabel: r.section_label,
+        assessmentTitle: r.assessment_title,
+        submittedAt: formatDateLabel(r.submitted_at),
+        gradedCount: Number(r.graded_count),
+      })),
+    });
   });
 
   fastify.post('/grades', async (request, reply) => {
@@ -747,6 +776,28 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
       [courseId, assessmentTitle]
     );
     if (!assessmentRows[0]) return reply.status(404).send({ error: 'Assessment not found' });
+
+    const taSubmissions = await query<{ id: string; ta_id: string | null }>(
+      `SELECT id, ta_id FROM ta_grade_submissions
+       WHERE assessment_id = $1 AND course_id = $2 AND status = 'PENDING'`,
+      [assessmentRows[0].id, courseId]
+    );
+    if (taSubmissions.length > 0) {
+      await query(
+        `UPDATE ta_grade_submissions SET status = 'APPROVED', reviewed_at = NOW(), reviewed_by = $1
+         WHERE assessment_id = $2 AND course_id = $3 AND status = 'PENDING'`,
+        [facultyId, assessmentRows[0].id, courseId]
+      );
+      for (const sub of taSubmissions) {
+        if (!sub.ta_id) continue;
+        await query(
+          `INSERT INTO notifications (user_id, title, body, type)
+           VALUES ($1, 'Grade Submission Approved', $2, 'grade')`,
+          [sub.ta_id, `${request.user!.name} approved and released your submitted grades for ${assessmentTitle}.`]
+        );
+      }
+    }
+
     const today = formatDateLabel(new Date());
     const updated = await query<{ id: string }>(
       `UPDATE grades SET status = 'RELEASED', released_date = $1 WHERE assessment_id = $2 RETURNING id`,

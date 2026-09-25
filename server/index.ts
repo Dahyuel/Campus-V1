@@ -14,11 +14,16 @@ import minioPlugin from './plugins/minio.js';
 import rabbitMQPlugin from './plugins/rabbitmq.js';
 import deptheadRoutes from './routes/depthead.js';
 import deanRoutes from './routes/dean.js';
+import taRoutes from './routes/ta.js';
 import notificationRoutes from './routes/notifications.js';
 import aiTutorRoutes from './routes/ai-tutor.js';
 import studentMessagesRoutes from './routes/student-messages.js';
 import studentCommunityRoutes from './routes/student-community.js';
 import adminMessagesRoutes from './routes/admin-messages.js';
+import smartScheduleRoutes from './routes/smart-schedule.js';
+import todoRoutes from './routes/todos.js';
+import recordingRoutes from './routes/recordings.js';
+import internalRoutes from './routes/internal.js';
 import multipart from '@fastify/multipart';
 import { redis } from './redis.js';
 
@@ -96,6 +101,11 @@ async function main(): Promise<void> {
   await app.register(aiTutorRoutes, { prefix: '/ai' });
 
   await app.register(notificationRoutes, { prefix: '/notifications' });
+
+  await app.register(smartScheduleRoutes, { prefix: '/schedule-ai' });
+  await app.register(todoRoutes, { prefix: '/todos' });
+  await app.register(recordingRoutes);
+  await app.register(internalRoutes, { prefix: '/internal' });
 
   app.get('/health', async (_request, reply) => {
     return reply.status(200).send({ status: 'ok' });

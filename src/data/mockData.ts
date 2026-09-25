@@ -66,6 +66,16 @@ export const ROLE_CREDENTIALS: Record<RoleType, DemoCredential> = {
     password: 'password123',
     description: 'Executive intelligence briefing, university metrics & dept. audits',
   },
+  'teaching-assistant': {
+    roleType: 'teaching-assistant',
+    title: 'Teaching Assistant',
+    roleLabel: 'Teaching Assistant — Computer Science',
+    name: 'Omar Tarek',
+    email: 'ta@nilebyte.edu',
+    username: 'ta',
+    password: 'password123',
+    description: 'Section management, lab attendance, grade submission & thesis tracker',
+  },
 };
 
 export const ROLE_USERS: Record<RoleType, User> = {
@@ -119,6 +129,16 @@ export const ROLE_USERS: Record<RoleType, User> = {
     avatarUrl: SHARED_AVATAR_URL,
     messageBadge: 5,
   },
+  'teaching-assistant': {
+    id: 'u-ta',
+    name: 'Omar Tarek',
+    role: 'Teaching Assistant — Computer Science',
+    roleType: 'teaching-assistant',
+    email: 'ta@nilebyte.edu',
+    codeId: 'TA-3021',
+    avatarUrl: SHARED_AVATAR_URL,
+    messageBadge: 3,
+  },
 };
 
 export const ROLE_NAVIGATION: Record<RoleType, NavItemConfig[]> = {
@@ -127,7 +147,10 @@ export const ROLE_NAVIGATION: Record<RoleType, NavItemConfig[]> = {
     { id: 'courses', label: 'My Courses', iconName: 'BookOpen' },
     { id: 'materials', label: 'Materials', iconName: 'FileText' },
     { id: 'schedule', label: 'Schedule', iconName: 'Calendar' },
+    { id: 'smart-schedule', label: 'Smart Schedule', iconName: 'Sparkles', badge: 'NEW' },
     { id: 'grades', label: 'Grades', iconName: 'BarChart2' },
+    { id: 'todo-list', label: 'To-Do List', iconName: 'CheckSquare', badge: 'NEW' },
+    { id: 'recordings', label: 'Recordings', iconName: 'Video', badge: 'NEW' },
     { id: 'community', label: 'Community', iconName: 'Users' },
     { id: 'ai-tutor', label: 'AI Tutor', iconName: 'Bot', badge: 'AI' },
     { id: 'messages', label: 'Messages', iconName: 'MessageSquare', badge: 2 },
@@ -167,6 +190,18 @@ export const ROLE_NAVIGATION: Record<RoleType, NavItemConfig[]> = {
     { id: 'at-risk', label: 'At-Risk Students', iconName: 'AlertTriangle' },
     { id: 'reports', label: 'Reports', iconName: 'FileText' },
     { id: 'messages', label: 'Messages', iconName: 'MessageSquare', badge: 2 },
+    { id: 'settings', label: 'Settings', iconName: 'Settings' },
+    { id: 'help', label: 'Help', iconName: 'HelpCircle' },
+  ],
+  'teaching-assistant': [
+    { id: 'home', label: 'Home', iconName: 'Home' },
+    { id: 'ta-sections', label: 'My Sections', iconName: 'Layout' },
+    { id: 'ta-attendance', label: 'Attendance', iconName: 'CheckCircle2' },
+    { id: 'ta-grades', label: 'Grade Entry', iconName: 'BarChart2' },
+    { id: 'ta-students', label: 'My Students', iconName: 'Users' },
+    { id: 'ta-materials', label: 'Materials', iconName: 'FolderOpen' },
+    { id: 'ta-academic-record', label: 'Academic Record', iconName: 'GraduationCap' },
+    { id: 'messages', label: 'Messages', iconName: 'MessageSquare', badge: 3 },
     { id: 'settings', label: 'Settings', iconName: 'Settings' },
     { id: 'help', label: 'Help', iconName: 'HelpCircle' },
   ],

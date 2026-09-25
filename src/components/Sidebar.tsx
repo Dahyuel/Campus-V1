@@ -21,7 +21,11 @@ import {
   DollarSign,
   FileText,
   AlertTriangle,
-  Building2
+  Building2,
+  FolderOpen,
+  Sparkles,
+  CheckSquare,
+  Video
 } from 'lucide-react';
 import { CAMPUS_LOGO_URL, ROLE_NAVIGATION } from '../data/mockData';
 import { TabId, RoleType, NavItemConfig } from '../types';
@@ -32,6 +36,9 @@ const TAB_TO_PATH: Record<TabId, string> = {
   'my-courses': '/Courses',
   materials: '/Materials',
   schedule: '/Schedule',
+  'smart-schedule': '/SmartSchedule',
+  'todo-list': '/TodoList',
+  recordings: '/Recordings',
   grades: '/Grades',
   community: '/Community',
   'ai-tutor': '/AITutor',
@@ -51,6 +58,12 @@ const TAB_TO_PATH: Record<TabId, string> = {
   'academic-overview': '/AcademicOverview',
   'financial-overview': '/FinancialOverview',
   'university-analytics': '/UniversityAnalytics',
+  'ta-sections': '/TASections',
+  'ta-attendance': '/TAAttendance',
+  'ta-grades': '/TAGrades',
+  'ta-students': '/TAStudents',
+  'ta-materials': '/TAMaterials',
+  'ta-academic-record': '/TAAcademicRecord',
   messages: '/Messages',
   settings: '/Settings',
   help: '/Help',

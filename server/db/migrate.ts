@@ -67,6 +67,15 @@ const SEED_USERS: SeedUser[] = [
     messageBadge: 5,
     role: 'Dean',
   },
+  {
+    name: 'Omar Tarek',
+    email: 'ta@nilebyte.edu',
+    username: 'ta',
+    roleType: 'teaching-assistant',
+    codeId: 'TA-3021',
+    messageBadge: 3,
+    role: 'Teaching Assistant — Computer Science',
+  },
 ];
 
 interface ExtraFaculty {
@@ -270,6 +279,8 @@ async function runMigrations(): Promise<void> {
     '006_events_notifications.sql',
     '007_ai_tutor.sql',
     '008_security_hardening.sql',
+    '009_features.sql',
+    '010_teaching_assistant.sql',
   ];
 
   for (const filename of files) {
@@ -1055,6 +1066,122 @@ async function seedPhase6(): Promise<void> {
   console.log('Seeded phase 6 data');
 }
 
+async function seedTA(): Promise<void> {
+  const taRow = await pool.query<{ id: string }>(`SELECT id FROM users WHERE email = 'ta@nilebyte.edu' LIMIT 1`);
+  const taId = taRow.rows[0]?.id ?? null;
+  if (!taId) return;
+
+  const facultyRow = await pool.query<{ id: string }>(`SELECT id FROM users WHERE email = 'faculty@nilebyte.edu' LIMIT 1`);
+  const facultyId = facultyRow.rows[0]?.id ?? null;
+  const deptHeadRow = await pool.query<{ id: string }>(`SELECT id FROM users WHERE email = 'depthead@nilebyte.edu' LIMIT 1`);
+  const deptHeadId = deptHeadRow.rows[0]?.id ?? null;
+
+  const cs301 = await pool.query<{ id: string }>(`SELECT id FROM courses WHERE code = 'CS-301' LIMIT 1`);
+  const cs401 = await pool.query<{ id: string }>(`SELECT id FROM courses WHERE code = 'CS-401' LIMIT 1`);
+  const cs301Id = cs301.rows[0]?.id ?? null;
+  const cs401Id = cs401.rows[0]?.id ?? null;
+
+  await pool.query(`DELETE FROM ta_section_assignments WHERE ta_id = $1`, [taId]);
+  if (cs301Id) {
+    await pool.query(
+      `INSERT INTO ta_section_assignments (ta_id, course_id, supervising_faculty_id, section_label, room)
+       VALUES ($1, $2, $3, 'Section B', 'Lab 204') ON CONFLICT (ta_id, course_id, section_label) DO NOTHING`,
+      [taId, cs301Id, facultyId]
+    );
+  }
+  if (cs401Id) {
+    await pool.query(
+      `INSERT INTO ta_section_assignments (ta_id, course_id, supervising_faculty_id, section_label, room)
+       VALUES ($1, $2, $3, 'Lab Group 2', 'Lab 301') ON CONFLICT (ta_id, course_id, section_label) DO NOTHING`,
+      [taId, cs401Id, deptHeadId]
+    );
+  }
+
+  await pool.query(`DELETE FROM ta_academic_record WHERE ta_id = $1`, [taId]);
+  await pool.query(
+    `INSERT INTO ta_academic_record (ta_id, degree_type, thesis_title, thesis_supervisor, research_field, enrollment_year, expected_grad, current_stage, stage_progress, gpa, notes)
+     VALUES ($1, 'Master''s', 'Optimizing Graph Traversal Algorithms for Large-Scale Social Networks', 'Prof. Ahmed El Gohary', 'Graph Theory & Distributed Systems', 2023, 2025, 'Research Proposal', 65, 3.7, 'Proposal defense scheduled for September 2024')`,
+    [taId]
+  );
+
+  await pool.query(`DELETE FROM ta_postgrad_courses WHERE ta_id = $1`, [taId]);
+  const PG = [
+    { name: 'Advanced Algorithms', code: 'CS-601', semester: 'Fall 2023', credits: 3, grade: 'A', status: 'COMPLETED' },
+    { name: 'Research Methodology', code: 'RS-501', semester: 'Fall 2023', credits: 3, grade: 'A-', status: 'COMPLETED' },
+    { name: 'Machine Learning Theory', code: 'CS-611', semester: 'Spring 2024', credits: 3, grade: 'B+', status: 'COMPLETED' },
+    { name: 'Graduate Seminar', code: 'GS-501', semester: 'Fall 2024', credits: 1, grade: 'In Progress', status: 'IN PROGRESS' },
+  ];
+  for (const c of PG) {
+    await pool.query(
+      `INSERT INTO ta_postgrad_courses (ta_id, course_name, course_code, semester, credits, grade, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [taId, c.name, c.code, c.semester, c.credits, c.grade, c.status]
+    );
+  }
+
+  await pool.query(`DELETE FROM ta_materials WHERE ta_id = $1`, [taId]);
+  if (cs301Id) {
+    await pool.query(
+      `INSERT INTO ta_materials (ta_id, course_id, section_label, file_name, file_key, file_size, material_type)
+       VALUES ($1, $2, 'Section B', 'CS301_SectionB_Lab7_Trees_Practice.pdf', 'courses/cs-301/ta-materials/TA3021_Lab7.pdf', '1.2 MB', 'Lab Sheet')`,
+      [taId, cs301Id]
+    );
+  }
+  if (cs401Id) {
+    await pool.query(
+      `INSERT INTO ta_materials (ta_id, course_id, section_label, file_name, file_key, file_size, material_type)
+       VALUES ($1, $2, 'Lab Group 2', 'CS401_LabGroup2_AI_Assignment1.pdf', 'courses/cs-401/ta-materials/TA3021_AI_Assignment1.pdf', '800 KB', 'Assignment PDF')`,
+      [taId, cs401Id]
+    );
+  }
+
+  await pool.query(`DELETE FROM attendance_sessions WHERE ta_id = $1`, [taId]);
+  if (cs301Id) {
+    const sessions = [
+      { label: 'Lab Session 7', date: '2024-07-08', present: 18, absent: 3 },
+      { label: 'Lab Session 6', date: '2024-07-04', present: 20, absent: 1 },
+    ];
+    for (const s of sessions) {
+      await pool.query(
+        `INSERT INTO attendance_sessions (course_id, ta_id, section_label, lecture_label, session_date, is_open, present_count, absent_count)
+         VALUES ($1, $2, 'Section B', $3, $4, false, $5, $6)`,
+        [cs301Id, taId, s.label, s.date, s.present, s.absent]
+      );
+    }
+  }
+
+  await pool.query(`DELETE FROM ta_grade_submissions WHERE ta_id = $1`, [taId]);
+  if (cs301Id) {
+    const assessmentRow = await pool.query<{ id: string }>(
+      `SELECT id FROM assessments WHERE course_id = $1 AND title = 'Assignment 1' LIMIT 1`,
+      [cs301Id]
+    );
+    if (assessmentRow.rows[0]) {
+      await pool.query(
+        `INSERT INTO ta_grade_submissions (ta_id, assessment_id, course_id, section_label, submitted_at, status)
+         VALUES ($1, $2, $3, 'Section B', '2024-07-10', 'PENDING')`,
+        [taId, assessmentRow.rows[0].id, cs301Id]
+      );
+    }
+  }
+
+  await pool.query(`DELETE FROM notifications WHERE user_id = $1`, [taId]);
+  const NOTIFS = [
+    { title: 'Grade submission approved', body: 'Dr. Ahmed Dahy approved your Quiz 1 grades for Section B', type: 'grade', read: false },
+    { title: 'New student flagged', body: 'Your attention flag for Ahmed Tarek has been forwarded to Dr. Ahmed Dahy', type: 'info', read: true },
+    { title: 'Thesis reminder', body: 'Research proposal deadline in 14 days', type: 'info', read: false },
+  ];
+  for (const n of NOTIFS) {
+    await pool.query(
+      `INSERT INTO notifications (user_id, title, body, type, read_at, created_at)
+       VALUES ($1, $2, $3, $4, ${n.read ? 'NOW()' : 'NULL'}, NOW())`,
+      [taId, n.title, n.body, n.type]
+    );
+  }
+
+  console.log('Seeded teaching assistant data');
+}
+
 async function main(): Promise<void> {
   try {
     await runMigrations();
@@ -1064,6 +1191,7 @@ async function main(): Promise<void> {
     await seedAdminCore();
     await seedPhase5();
     await seedPhase6();
+    await seedTA();
   } catch (err) {
     console.error('Migration failed:', err);
     process.exitCode = 1;

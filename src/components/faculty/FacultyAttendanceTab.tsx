@@ -79,11 +79,25 @@ export const FacultyAttendanceTab: React.FC = () => {
 
   const handleRegenerateQr = async () => {
     if (!activeCourseId) return;
+    let latitude: number | undefined;
+    let longitude: number | undefined;
+    if (navigator.geolocation) {
+      try {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
+        );
+        latitude = pos.coords.latitude;
+        longitude = pos.coords.longitude;
+      } catch {
+        // continue without geofencing
+      }
+    }
     try {
-      await createSession.mutateAsync({ courseId: activeCourseId, lectureLabel: selectedLecture });
+      await createSession.mutateAsync({ courseId: activeCourseId, lectureLabel: selectedLecture, latitude, longitude, radiusMeters: 100 });
       setIsQrActive(true);
       setTimeLeft(600);
-      showToast(`Generated fresh attendance QR token for ${selectedLecture}`);
+      const geoMsg = latitude ? ' (Geofenced to 100m radius)' : ' (No geofencing - location unavailable)';
+      showToast(`Generated fresh attendance QR token for ${selectedLecture}${geoMsg}`);
     } catch {
       showToast('Failed to generate QR. Please try again.');
     }
@@ -249,6 +263,11 @@ export const FacultyAttendanceTab: React.FC = () => {
                   <span className="font-mono text-[#3256a8] font-extrabold text-lg">
                     {formatCountdown(timeLeft)}
                   </span>
+                </div>
+                <div className="mt-2 flex items-center justify-center">
+                  <div className="flex items-center gap-1 text-xs text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
+                    <span>Geofenced — 100m radius active</span>
+                  </div>
                 </div>
 
                 {/* Two small buttons: Extend Time & End Session */}

@@ -11,6 +11,10 @@ import { DeanDashboard } from './components/dashboards/DeanDashboard';
 import { MyCoursesTab } from './components/student/MyCoursesTab';
 import { MaterialTab } from './components/student/MaterialTab';
 import { ScheduleTab } from './components/student/ScheduleTab';
+import { SmartScheduleTab } from './components/student/SmartScheduleTab';
+import { TodoTab } from './components/student/TodoTab';
+import { RecordingsTab } from './components/student/RecordingsTab';
+import { FacultySmartScheduleTab } from './components/faculty/FacultySmartScheduleTab';
 import { GradesTab } from './components/student/GradesTab';
 import { CommunityTab } from './components/student/CommunityTab';
 import { AITutorTab } from './components/student/AITutorTab';
@@ -48,6 +52,14 @@ import { DeptHeadReportsTab } from './components/depthead/DeptHeadReportsTab';
 import { DeptHeadMessagesTab } from './components/depthead/DeptHeadMessagesTab';
 import { DeptHeadSettingsTab } from './components/depthead/DeptHeadSettingsTab';
 import { EmptyTab } from './components/EmptyTab';
+import { TADashboard } from './components/dashboards/TADashboard';
+import { TASectionsTab } from './components/ta/TASectionsTab';
+import { TAAttendanceTab } from './components/ta/TAAttendanceTab';
+import { TAGradeEntryTab } from './components/ta/TAGradeEntryTab';
+import { TAStudentsTab } from './components/ta/TAStudentsTab';
+import { TAMaterialsTab } from './components/ta/TAMaterialsTab';
+import { TAAcademicRecordTab } from './components/ta/TAAcademicRecordTab';
+import { TAMessagesTab } from './components/ta/TAMessagesTab';
 import { TabId, RoleType, User } from './types';
 import { useAuth } from './context/AuthContext.tsx';
 
@@ -57,6 +69,9 @@ const TAB_TO_PATH: Record<TabId, string> = {
   'my-courses': '/Courses',
   materials: '/Materials',
   schedule: '/Schedule',
+  'smart-schedule': '/SmartSchedule',
+  'todo-list': '/TodoList',
+  recordings: '/Recordings',
   grades: '/Grades',
   community: '/Community',
   'ai-tutor': '/AITutor',
@@ -76,6 +91,12 @@ const TAB_TO_PATH: Record<TabId, string> = {
   'academic-overview': '/AcademicOverview',
   'financial-overview': '/FinancialOverview',
   'university-analytics': '/UniversityAnalytics',
+  'ta-sections': '/TASections',
+  'ta-attendance': '/TAAttendance',
+  'ta-grades': '/TAGrades',
+  'ta-students': '/TAStudents',
+  'ta-materials': '/TAMaterials',
+  'ta-academic-record': '/TAAcademicRecord',
   messages: '/Messages',
   settings: '/Settings',
   help: '/Help',
@@ -84,7 +105,7 @@ const TAB_TO_PATH: Record<TabId, string> = {
 interface RoleViewProps {
   user: User;
   searchQuery: string;
-  onNavigateTab: (tab: TabId) => void;
+  onNavigateTab: (tabId: any) => void;
 }
 
 const navigateTab = (navigate: ReturnType<typeof useNavigate>) => (tab: TabId) => {
@@ -104,6 +125,9 @@ const HomeForRole: React.FC<RoleViewProps> = ({ user, searchQuery, onNavigateTab
   }
   if (currentRole === 'dept-head') {
     return <DeptHeadDashboard searchQuery={searchQuery} onNavigateTab={onNavigateTab} />;
+  }
+  if (currentRole === 'teaching-assistant') {
+    return <TADashboard searchQuery={searchQuery} onNavigateTab={onNavigateTab} />;
   }
   return <DeanDashboard searchQuery={searchQuery} onNavigateTab={onNavigateTab} />;
 };
@@ -134,6 +158,30 @@ const ScheduleForRole: React.FC<RoleViewProps> = ({ user, searchQuery, onNavigat
     return <ScheduleTab searchQuery={searchQuery} />;
   }
   return <EmptyTab tabId="schedule" onBackToHome={() => onNavigateTab('home')} />;
+};
+
+const SmartScheduleForRole: React.FC<RoleViewProps> = ({ user, onNavigateTab }) => {
+  if (user.roleType === 'student') {
+    return <SmartScheduleTab user={user} />;
+  }
+  if (user.roleType === 'faculty') {
+    return <FacultySmartScheduleTab user={user} />;
+  }
+  return <EmptyTab tabId="smart-schedule" onBackToHome={() => onNavigateTab('home')} />;
+};
+
+const TodoListForRole: React.FC<RoleViewProps> = ({ user, onNavigateTab }) => {
+  if (user.roleType === 'student') {
+    return <TodoTab user={user} />;
+  }
+  return <EmptyTab tabId="todo-list" onBackToHome={() => onNavigateTab('home')} />;
+};
+
+const RecordingsForRole: React.FC<RoleViewProps> = ({ user, onNavigateTab }) => {
+  if (user.roleType === 'student') {
+    return <RecordingsTab user={user} />;
+  }
+  return <EmptyTab tabId="recordings" onBackToHome={() => onNavigateTab('home')} />;
 };
 
 const GradesForRole: React.FC<RoleViewProps> = ({ user, searchQuery, onNavigateTab }) => {
@@ -300,7 +348,52 @@ const MessagesForRole: React.FC<RoleViewProps> = ({ user, searchQuery, onNavigat
   if (user.roleType === 'dean') {
     return <DeanMessagesTab searchQuery={searchQuery} />;
   }
+  if (user.roleType === 'teaching-assistant') {
+    return <TAMessagesTab searchQuery={searchQuery} />;
+  }
   return <EmptyTab tabId="messages" onBackToHome={() => onNavigateTab('home')} />;
+};
+
+const TASectionsForRole: React.FC<RoleViewProps> = ({ user, onNavigateTab }) => {
+  if (user.roleType === 'teaching-assistant') {
+    return <TASectionsTab onNavigateTab={onNavigateTab} />;
+  }
+  return <EmptyTab tabId="courses" onBackToHome={() => onNavigateTab('home')} />;
+};
+
+const TAAttendanceForRole: React.FC<RoleViewProps> = ({ user, onNavigateTab }) => {
+  if (user.roleType === 'teaching-assistant') {
+    return <TAAttendanceTab />;
+  }
+  return <EmptyTab tabId="attendance" onBackToHome={() => onNavigateTab('home')} />;
+};
+
+const TAGradesForRole: React.FC<RoleViewProps> = ({ user, onNavigateTab }) => {
+  if (user.roleType === 'teaching-assistant') {
+    return <TAGradeEntryTab />;
+  }
+  return <EmptyTab tabId="grade-entry" onBackToHome={() => onNavigateTab('home')} />;
+};
+
+const TAStudentsForRole: React.FC<RoleViewProps> = ({ user, onNavigateTab }) => {
+  if (user.roleType === 'teaching-assistant') {
+    return <TAStudentsTab />;
+  }
+  return <EmptyTab tabId="my-students" onBackToHome={() => onNavigateTab('home')} />;
+};
+
+const TAMaterialsForRole: React.FC<RoleViewProps> = ({ user, onNavigateTab }) => {
+  if (user.roleType === 'teaching-assistant') {
+    return <TAMaterialsTab />;
+  }
+  return <EmptyTab tabId="materials" onBackToHome={() => onNavigateTab('home')} />;
+};
+
+const TAAcademicRecordForRole: React.FC<RoleViewProps> = ({ user, onNavigateTab }) => {
+  if (user.roleType === 'teaching-assistant') {
+    return <TAAcademicRecordTab />;
+  }
+  return <EmptyTab tabId="settings" onBackToHome={() => onNavigateTab('home')} />;
 };
 
 const SettingsForRole: React.FC<RoleViewProps> = ({ user, searchQuery, onNavigateTab }) => {
@@ -413,6 +506,9 @@ export default function App() {
         {user && <Route path="/Materials" element={<MaterialsForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
         {user && <Route path="/Grades" element={<GradesForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
         {user && <Route path="/Schedule" element={<ScheduleForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
+        {user && <Route path="/SmartSchedule" element={<SmartScheduleForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
+        {user && <Route path="/TodoList" element={<TodoListForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
+        {user && <Route path="/Recordings" element={<RecordingsForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
         {user && <Route path="/Community" element={<CommunityForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
         {user && <Route path="/AITutor" element={<AITutorForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
         {user && <Route path="/MyStudents" element={<MyStudentsForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
@@ -431,6 +527,12 @@ export default function App() {
         {user && <Route path="/AcademicOverview" element={<AcademicOverviewForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
         {user && <Route path="/FinancialOverview" element={<FinancialOverviewForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
         {user && <Route path="/UniversityAnalytics" element={<UniversityAnalyticsForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
+        {user && <Route path="/TASections" element={<TASectionsForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
+        {user && <Route path="/TAAttendance" element={<TAAttendanceForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
+        {user && <Route path="/TAGrades" element={<TAGradesForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
+        {user && <Route path="/TAStudents" element={<TAStudentsForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
+        {user && <Route path="/TAMaterials" element={<TAMaterialsForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
+        {user && <Route path="/TAAcademicRecord" element={<TAAcademicRecordForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
         {user && <Route path="/Messages" element={<MessagesForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
         {user && <Route path="/Settings" element={<SettingsForRole user={user} searchQuery={searchQuery} onNavigateTab={go} />} />}
         {user && <Route path="/Help" element={<EmptyTab tabId="help" onBackToHome={() => go('home')} />} />}

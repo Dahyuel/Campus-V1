@@ -197,6 +197,9 @@ export default fp(async function rabbitMQPlugin(fastify: FastifyInstance): Promi
     await channel.bindQueue('atrisk.queue', EXCHANGE, '*.grade.released');
     await channel.bindQueue('atrisk.queue', EXCHANGE, '*.attendance.closed');
 
+    await channel.assertQueue('transcription.queue', { durable: true });
+    await channel.bindQueue('transcription.queue', EXCHANGE, 'recording.uploaded');
+
     await channel.consume('notifications.queue', (msg) => {
       if (!msg) return;
       void (async () => {
@@ -272,6 +275,32 @@ export default fp(async function rabbitMQPlugin(fastify: FastifyInstance): Promi
         } catch (err) {
           fastify.log.error({ err }, 'atrisk consumer failed');
           channel.nack(msg, false, false);
+        }
+      })();
+    });
+
+    await channel.consume('transcription.queue', (msg) => {
+      if (!msg) return;
+      void (async () => {
+        try {
+          const payload = JSON.parse(msg.content.toString()) as {
+            recordingId: string;
+            fileKey: string;
+            courseCode: string;
+          };
+          await fetch(`${process.env.WHISPER_SERVICE_URL ?? 'http://localhost:5002'}/transcribe`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              recordingId: payload.recordingId,
+              fileKey: payload.fileKey,
+              bucket: process.env.MINIO_BUCKET ?? 'campus-materials',
+            }),
+          });
+          channel.ack(msg);
+        } catch (err) {
+          fastify.log.error({ err }, 'transcription consumer failed');
+          channel.nack(msg, false, true);
         }
       })();
     });

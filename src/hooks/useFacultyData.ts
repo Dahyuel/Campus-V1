@@ -44,7 +44,7 @@ export const useFacultyGrades = (courseId: string | null, assessmentTitle: strin
     queryKey: ['faculty', 'grades', courseId, assessmentTitle],
     queryFn: () =>
       api
-        .get(`/faculty/grades?courseId=${courseId}&assessmentTitle=${encodeURIComponent(assessmentTitle)}`)
+        .get(`/faculty/grades?courseId=${courseId}&assessmentTitle=${encodeURIComponent(assessmentTitle)}&showTAPending=true`)
         .then((r) => r.data),
     enabled: !!courseId,
   });
@@ -109,7 +109,7 @@ export const useReleaseGrades = () => {
 export const useCreateAttendanceSession = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { courseId: string; lectureLabel: string }) =>
+    mutationFn: (payload: { courseId: string; lectureLabel: string; latitude?: number; longitude?: number; radiusMeters?: number }) =>
       api.post('/faculty/attendance/session', payload).then((r) => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'attendance'] }),
   });
