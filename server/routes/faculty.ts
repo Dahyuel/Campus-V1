@@ -671,7 +671,7 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
       [courseId, assessmentTitle]
     );
     const assessment = assessmentRows[0];
-    if (!assessment) return reply.status(200).send([]);
+    if (!assessment) return reply.status(200).send({ entries: [], taPendingSubmissions: [] });
     const outOf = assessment.out_of ?? 100;
 
     const rows = await query<{

@@ -31,7 +31,7 @@ export const FacultyGradeEntryTab: React.FC = () => {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    if (gradesData) setGradeRows(gradesData);
+    if (gradesData) setGradeRows(gradesData.entries ?? []);
   }, [gradesData, activeCourse, activeAssessment]);
   const [showTooltip, setShowTooltip] = useState(false);
 
