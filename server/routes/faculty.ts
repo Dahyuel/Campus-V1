@@ -377,11 +377,14 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
       return reply.status(503).send({ error: 'File storage is unavailable. Please try again later.' });
     }
 
-    const sizeMb = (buffer.length / (1024 * 1024)).toFixed(1);
+    const sizeLabel =
+      buffer.length < 100 * 1024
+        ? `${Math.max(1, Math.round(buffer.length / 1024))} KB`
+        : `${(buffer.length / (1024 * 1024)).toFixed(1)} MB`;
     const inserted = await query<{ id: string; uploaded_at: string }>(
       `INSERT INTO course_materials (course_id, faculty_id, file_name, file_key, file_size, material_type)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, uploaded_at`,
-      [course.id, facultyId, safeName, key, `${sizeMb} MB`, materialType]
+      [course.id, facultyId, safeName, key, sizeLabel, materialType]
     );
 
     // Fire-and-forget RAG indexing
@@ -398,7 +401,7 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
       course: escapeHtml(course.name),
       type: escapeHtml(materialType),
       uploadDate: formatDateLabel(inserted[0].uploaded_at),
-      size: `${sizeMb} MB`,
+      size: sizeLabel,
     });
   });
 

@@ -18,11 +18,10 @@ separate `./backend/` and `./frontend/` directories; those do not exist.
 **Prerequisites:** Node.js 20+, Docker (for Postgres + Redis)
 
 1. `cp .env.example .env` and fill in strong secrets (see required keys below).
-2. Log in to Docker for quad.io **before** running the script:
-   ```bash
-   docker login
-   ```
-3. `./development.sh`           # one-shot script: starts infra, migrates, and runs backend + frontend
+2. `./development.sh`           # one-shot script: starts infra, migrates, and runs backend + frontend
+
+No registry login is needed: MinIO runs from the public `bitnamilegacy/minio`
+image (MinIO's own quay.io and Docker Hub images are no longer public).
 
 The `development.sh` script will:
 
