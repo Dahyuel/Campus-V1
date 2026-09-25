@@ -46,6 +46,7 @@
     "motion": "^12.23.24",
     "openai": "^7.23.0",
     "pg": "^8.23.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "react-router-dom": "^7.18.4",

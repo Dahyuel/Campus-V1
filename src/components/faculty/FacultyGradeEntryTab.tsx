@@ -12,31 +12,52 @@ import {
 import { GradeEntryRow } from '../../data/facultyMockData';
 import {
   useFacultyCourses,
+  useFacultyAssessments,
   useFacultyGrades,
   useSaveGrades,
   useReleaseGrades,
 } from '../../hooks/useFacultyData';
 import { useEffect } from 'react';
 
+interface FacultyCourse {
+  id: string;
+  name: string;
+  code: string;
+  section: string;
+}
+
+interface FacultyAssessment {
+  id: string;
+  title: string;
+  type: string;
+  weight: string;
+  outOf: number;
+}
+
 export const FacultyGradeEntryTab: React.FC = () => {
-  const [activeCourse, setActiveCourse] = useState('Data Structures');
-  const [activeAssessment, setActiveAssessment] = useState('Midterm');
   const { data: coursesData } = useFacultyCourses();
-  const activeCourseId =
-    coursesData?.find((c: { name: string; id: string }) => c.name === activeCourse)?.id ?? null;
-  const { data: gradesData } = useFacultyGrades(activeCourseId, activeAssessment);
+  const courses: FacultyCourse[] = coursesData ?? [];
+  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
+  const activeCourse = courses.find((c) => c.id === selectedCourseId) ?? courses[0] ?? null;
+  const activeCourseId = activeCourse?.id ?? null;
+
+  const { data: assessmentsData } = useFacultyAssessments(activeCourseId);
+  const assessments: FacultyAssessment[] = assessmentsData ?? [];
+  const [selectedAssessment, setSelectedAssessment] = useState<string | null>(null);
+  const currentAssessment =
+    assessments.find((a) => a.title === selectedAssessment) ?? assessments[0] ?? null;
+  const activeAssessment = currentAssessment?.title ?? '';
+
+  const { data: gradesData } = useFacultyGrades(activeAssessment ? activeCourseId : null, activeAssessment);
   const saveGrades = useSaveGrades();
   const releaseGrades = useReleaseGrades();
   const [gradeRows, setGradeRows] = useState<GradeEntryRow[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    if (gradesData) setGradeRows(gradesData.entries ?? []);
-  }, [gradesData, activeCourse, activeAssessment]);
+    setGradeRows(gradesData?.entries ?? []);
+  }, [gradesData, activeCourseId, activeAssessment]);
   const [showTooltip, setShowTooltip] = useState(false);
-
-  const courseTabs = ['Data Structures', 'Mathematics', 'AI', 'Networks'];
-  const assessments = ['Assignment 1', 'Assignment 2', 'Midterm', 'Final'];
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -121,18 +142,18 @@ export const FacultyGradeEntryTab: React.FC = () => {
       <section className="bg-white rounded-3xl p-6 border border-slate-100 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.04)]">
         {/* Course Tab Strip */}
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 pb-4 mb-5">
-          {courseTabs.map((tab) => (
+          {courses.map((course) => (
             <button
-              key={tab}
-              id={`tab-grade-${tab.toLowerCase().replace(' ', '-')}`}
-              onClick={() => setActiveCourse(tab)}
+              key={course.id}
+              id={`tab-grade-${course.code.toLowerCase()}`}
+              onClick={() => setSelectedCourseId(course.id)}
               className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                activeCourse === tab
+                activeCourseId === course.id
                   ? 'bg-[#3256a8] text-white shadow-xs'
                   : 'bg-slate-50 text-slate-600 hover:bg-slate-100 border border-slate-200/60'
               }`}
             >
-              {tab}
+              {course.name}
             </button>
           ))}
         </div>
@@ -140,28 +161,32 @@ export const FacultyGradeEntryTab: React.FC = () => {
         {/* Assessment Selector Row + Assessment Details in small gray text */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 bg-slate-50/70 rounded-2xl border border-slate-100 mb-6">
           <div className="flex flex-wrap items-center gap-2">
+            {assessments.length === 0 && (
+              <span className="text-xs text-slate-500">No assessments defined for this course.</span>
+            )}
             {assessments.map((ass) => (
               <button
-                key={ass}
-                id={`btn-assessment-${ass.toLowerCase().replace(' ', '-')}`}
-                onClick={() => setActiveAssessment(ass)}
+                key={ass.id}
+                id={`btn-assessment-${ass.id}`}
+                onClick={() => setSelectedAssessment(ass.title)}
                 className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${
-                  activeAssessment === ass
+                  activeAssessment === ass.title
                     ? 'bg-[#3256a8] text-white shadow-xs'
                     : 'bg-white border border-slate-200 text-slate-700 hover:border-slate-300'
                 }`}
               >
-                {ass}
+                {ass.title}
               </button>
             ))}
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
-            <span>Weight: 30% · Max Grade: 30 · Deadline: 10 Jul 2024</span>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-rose-50 border border-rose-200 text-rose-700">
-              OVERDUE
-            </span>
-          </div>
+          {currentAssessment && (
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+              <span>
+                {currentAssessment.type} · Weight: {currentAssessment.weight} · Max Grade: {currentAssessment.outOf}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Main Grade Entry Table */}
@@ -246,7 +271,11 @@ export const FacultyGradeEntryTab: React.FC = () => {
             </span>
           </div>
 
-          <span className="text-[11px] text-slate-400">Section CS-301 A Roster</span>
+          {activeCourse && (
+            <span className="text-[11px] text-slate-400">
+              {activeCourse.code} · {activeCourse.section} Roster
+            </span>
+          )}
         </div>
 
         {/* Action Buttons at Bottom Right */}

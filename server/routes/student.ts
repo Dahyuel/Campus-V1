@@ -90,6 +90,57 @@ async function requireStudent(
 export default async function studentRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('preHandler', requireStudent);
 
+  fastify.post('/attendance/scan', async (request, reply) => {
+    const studentId = request.user!.id;
+    const { qrToken, studentLat, studentLng } = (request.body ?? {}) as {
+      qrToken?: string;
+      studentLat?: number;
+      studentLng?: number;
+    };
+    if (!qrToken) return reply.status(400).send({ message: 'Missing attendance token.' });
+
+    const cached = await redis.get(qrKey(qrToken));
+    if (!cached) {
+      return reply.status(400).send({ message: 'This attendance QR has expired or is invalid.' });
+    }
+    const { sessionId, courseId } = JSON.parse(cached) as { sessionId: string; courseId: string };
+
+    const sessionRows = await query<{ is_open: boolean; latitude: number | null; longitude: number | null; radius_meters: number | null }>(
+      `SELECT is_open, latitude, longitude, radius_meters FROM attendance_sessions WHERE id = $1 LIMIT 1`,
+      [sessionId]
+    );
+    const session = sessionRows[0];
+    if (!session || !session.is_open) {
+      return reply.status(400).send({ message: 'This attendance session is closed.' });
+    }
+
+    const enrolled = await query<{ id: string }>(
+      `SELECT id FROM enrollments WHERE course_id = $1 AND student_id = $2 AND status IS DISTINCT FROM 'DROPPED' LIMIT 1`,
+      [courseId, studentId]
+    );
+    if (!enrolled[0]) {
+      return reply.status(403).send({ message: 'You are not enrolled in this course.' });
+    }
+
+    if (session.latitude !== null && session.longitude !== null) {
+      if (typeof studentLat !== 'number' || typeof studentLng !== 'number') {
+        return reply.status(400).send({ message: 'Location access is required to check in to this session.' });
+      }
+      const distance = haversineDistance(Number(session.latitude), Number(session.longitude), studentLat, studentLng);
+      if (distance > (session.radius_meters ?? 100)) {
+        return reply.status(403).send({ message: 'You are too far from the classroom to check in.' });
+      }
+    }
+
+    await query(
+      `INSERT INTO attendance_records (session_id, student_id, status, method)
+       VALUES ($1, $2, 'PRESENT', 'QR')
+       ON CONFLICT (session_id, student_id) DO UPDATE SET status = 'PRESENT', method = 'QR', marked_at = NOW()`,
+      [sessionId, studentId]
+    );
+    return reply.status(200).send({ message: 'Attendance marked.' });
+  });
+
   fastify.get('/courses', async (request, reply) => {
     const studentId = request.user!.id;
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import {
   pageVariants,
@@ -46,9 +46,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
 
   const liveClass = (scheduleData ?? []).find((item: { isLive?: boolean }) => item.isLive);
 
-  const handleScanAttendance = async () => {
-    const token = window.prompt('Enter the QR token shown by your faculty:');
-    if (!token) return;
+  const submitAttendance = async (token: string) => {
     let studentLat: number | undefined;
     let studentLng: number | undefined;
     if (navigator.geolocation) {
@@ -70,6 +68,27 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
       showToast(msg);
     }
   };
+
+  const handleScanAttendance = async () => {
+    const token = window.prompt('Enter the QR token shown by your faculty:');
+    if (!token) return;
+    await submitAttendance(token.trim());
+  };
+
+  // Opened from a scanned attendance QR (token stashed in main.tsx)
+  const pendingAttendHandled = useRef(false);
+  useEffect(() => {
+    if (pendingAttendHandled.current) return;
+    pendingAttendHandled.current = true;
+    let token: string | null = null;
+    try {
+      token = sessionStorage.getItem('pendingAttendToken');
+      sessionStorage.removeItem('pendingAttendToken');
+    } catch {
+      return;
+    }
+    if (token) submitAttendance(token);
+  }, []);
 
   const GRADE_SUBJECTS: GradeSubject[] = dashData?.gradeSubjects ?? [];
   const ACTIVITIES = dashData?.activities ?? [];

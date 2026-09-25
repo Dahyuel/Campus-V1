@@ -9,52 +9,81 @@ import {
   AlertCircle,
   Plus,
   X,
-  RefreshCw
+  RefreshCw,
+  Copy
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { StudentAttendanceSummary } from '../../data/facultyMockData';
 import {
   useFacultyCourses,
   useFacultyAttendanceSessions,
   useFacultyAttendanceSummary,
   useCreateAttendanceSession,
+  useExtendAttendanceSession,
+  useCloseAttendanceSession,
+  useMarkAttendanceManual,
 } from '../../hooks/useFacultyData';
 
+interface FacultyCourse {
+  id: string;
+  name: string;
+  code: string;
+}
+
+interface ActiveSession {
+  sessionId: string;
+  qrToken: string;
+  expiresAt: string;
+  lectureLabel: string;
+  courseName: string;
+  geofenced: boolean;
+}
+
+type ManualStatus = 'PRESENT' | 'ABSENT' | 'EXCUSED';
+
 export const FacultyAttendanceTab: React.FC = () => {
-  // Top Section State - QR Attendance Session
   const { data: coursesData } = useFacultyCourses();
-  const [activeCourseTab, setActiveCourseTab] = useState('Data Structures');
-  const activeCourseId =
-    coursesData?.find((c: { name: string; id: string }) => c.name === activeCourseTab || c.name.startsWith(activeCourseTab))?.id ?? null;
+  const courses: FacultyCourse[] = coursesData ?? [];
+
+  // Bottom section - records for the selected course tab
+  const [selectedTabCourseId, setActiveCourseTab] = useState<string | null>(null);
+  const tabCourse = courses.find((c) => c.id === selectedTabCourseId) ?? courses[0] ?? null;
+  const activeCourseId = tabCourse?.id ?? null;
+  const activeCourseTab = tabCourse?.name ?? '';
   const { data: sessionsData } = useFacultyAttendanceSessions(activeCourseId);
   const { data: summaryData } = useFacultyAttendanceSummary(activeCourseId);
-  const createSession = useCreateAttendanceSession();
 
-  const [selectedCourse, setSelectedCourse] = useState('Data Structures');
-  const [selectedLecture, setSelectedLecture] = useState('Lecture 12');
-  const [isQrActive, setIsQrActive] = useState(true);
-  const [timeLeft, setTimeLeft] = useState(527); // 8 minutes 47 seconds = 527 seconds
+  // Top section - QR session
+  const createSession = useCreateAttendanceSession();
+  const extendSession = useExtendAttendanceSession();
+  const closeSession = useCloseAttendanceSession();
+  const markManual = useMarkAttendanceManual();
+  const [selectedCourseId, setSelectedCourse] = useState<string | null>(null);
+  const qrCourse = courses.find((c) => c.id === selectedCourseId) ?? courses[0] ?? null;
+  const [selectedLecture, setSelectedLecture] = useState('');
+  const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Manual mark modal state
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
-  const [studentSummaries, setStudentSummaries] = useState<StudentAttendanceSummary[]>([]);
-  const [manualStudentName, setManualStudentName] = useState('Sara Mahmoud');
-  const [manualStatus, setManualStatus] = useState<'Present' | 'Excused'>('Present');
+  const [manualSessionId, setManualSessionId] = useState('');
+  const [manualStudentId, setManualStudentId] = useState('');
+  const [manualStatus, setManualStatus] = useState<ManualStatus>('PRESENT');
 
-  useEffect(() => {
-    if (summaryData) setStudentSummaries(summaryData);
-  }, [summaryData]);
-
+  const studentSummaries: StudentAttendanceSummary[] = summaryData ?? [];
   const PAST_ATTENDANCE_SESSIONS = sessionsData ?? [];
 
-  // Countdown timer effect
+  const timeLeft = activeSession
+    ? Math.max(0, Math.round((new Date(activeSession.expiresAt).getTime() - now) / 1000))
+    : 0;
+
+  // Countdown tick while a session is open
   useEffect(() => {
-    if (!isQrActive || timeLeft <= 0) return;
-    const interval = setInterval(() => {
-      setTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
-    }, 1000);
+    if (!activeSession) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
-  }, [isQrActive, timeLeft]);
+  }, [activeSession]);
 
   const formatCountdown = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -67,18 +96,50 @@ export const FacultyAttendanceTab: React.FC = () => {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleExtendTime = () => {
-    setTimeLeft((prev) => prev + 300); // add 5 minutes
-    showToast('Extended attendance session by 5 minutes');
+  const checkInUrl = activeSession
+    ? `${window.location.origin}/?attend=${encodeURIComponent(activeSession.qrToken)}`
+    : '';
+
+  const handleCopyToken = async () => {
+    if (!activeSession) return;
+    try {
+      await navigator.clipboard.writeText(activeSession.qrToken);
+      showToast('Check-in token copied');
+    } catch {
+      showToast('Could not copy — select the token manually');
+    }
   };
 
-  const handleEndSession = () => {
-    setIsQrActive(false);
-    showToast('Attendance session concluded. Results synced.');
+  const handleExtendTime = async () => {
+    if (!activeSession) return;
+    try {
+      const result = await extendSession.mutateAsync(activeSession.sessionId);
+      setActiveSession({ ...activeSession, expiresAt: result.expiresAt });
+      setNow(Date.now());
+      showToast('Extended attendance session by 5 minutes');
+    } catch {
+      showToast('Failed to extend session.');
+    }
+  };
+
+  const handleEndSession = async () => {
+    if (!activeSession) return;
+    try {
+      await closeSession.mutateAsync(activeSession.sessionId);
+      setActiveSession(null);
+      showToast('Attendance session closed. Students who did not check in were marked absent.');
+    } catch {
+      showToast('Failed to close session.');
+    }
   };
 
   const handleRegenerateQr = async () => {
-    if (!activeCourseId) return;
+    if (!qrCourse) return;
+    const lectureLabel = selectedLecture.trim();
+    if (!lectureLabel) {
+      showToast('Enter a lecture label first, e.g. "Lecture 12".');
+      return;
+    }
     let latitude: number | undefined;
     let longitude: number | undefined;
     if (navigator.geolocation) {
@@ -93,38 +154,43 @@ export const FacultyAttendanceTab: React.FC = () => {
       }
     }
     try {
-      await createSession.mutateAsync({ courseId: activeCourseId, lectureLabel: selectedLecture, latitude, longitude, radiusMeters: 100 });
-      setIsQrActive(true);
-      setTimeLeft(600);
-      const geoMsg = latitude ? ' (Geofenced to 100m radius)' : ' (No geofencing - location unavailable)';
-      showToast(`Generated fresh attendance QR token for ${selectedLecture}${geoMsg}`);
+      const result = await createSession.mutateAsync({ courseId: qrCourse.id, lectureLabel, latitude, longitude, radiusMeters: 100 });
+      setActiveSession({
+        sessionId: result.sessionId,
+        qrToken: result.qrToken,
+        expiresAt: result.expiresAt,
+        lectureLabel,
+        courseName: qrCourse.name,
+        geofenced: latitude !== undefined,
+      });
+      setNow(Date.now());
+      setActiveCourseTab(qrCourse.id);
+      const geoMsg = latitude !== undefined ? ' (Geofenced to 100m radius)' : ' (No geofencing - location unavailable)';
+      showToast(`Attendance QR opened for ${lectureLabel}${geoMsg}`);
     } catch {
       showToast('Failed to generate QR. Please try again.');
     }
   };
 
-  const handleManualMarkSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setStudentSummaries((prev) =>
-      prev.map((s) => {
-        if (s.name === manualStudentName) {
-          const newPresent = s.present + 1;
-          const newRate = Math.round((newPresent / (newPresent + s.absent)) * 100);
-          return {
-            ...s,
-            present: newPresent,
-            rate: newRate,
-            status: newRate >= 75 ? 'GOOD' : 'WARNING',
-          };
-        }
-        return s;
-      })
-    );
-    setIsManualModalOpen(false);
-    showToast(`Marked ${manualStudentName} as ${manualStatus}`);
+  const openManualModal = () => {
+    setManualSessionId(PAST_ATTENDANCE_SESSIONS[0]?.id ?? '');
+    setManualStudentId(studentSummaries[0]?.id ?? '');
+    setManualStatus('PRESENT');
+    setIsManualModalOpen(true);
   };
 
-  const courseTabs = ['Data Structures', 'Mathematics', 'AI', 'Networks'];
+  const handleManualMarkSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualSessionId || !manualStudentId) return;
+    const studentName = studentSummaries.find((s) => s.id === manualStudentId)?.name ?? 'student';
+    try {
+      await markManual.mutateAsync({ sessionId: manualSessionId, studentId: manualStudentId, status: manualStatus });
+      setIsManualModalOpen(false);
+      showToast(`Marked ${studentName} as ${manualStatus.toLowerCase()}`);
+    } catch {
+      showToast('Failed to update attendance.');
+    }
+  };
 
   return (
     <div className="space-y-7 animate-in fade-in duration-200">
@@ -154,31 +220,32 @@ export const FacultyAttendanceTab: React.FC = () => {
           {/* Controls: Select Course, Select Lecture, Generate Button */}
           <div className="flex flex-wrap items-center justify-center gap-3 mt-5">
             <select
-              value={selectedCourse}
+              value={qrCourse?.id ?? ''}
               onChange={(e) => setSelectedCourse(e.target.value)}
-              className="px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 shadow-xs focus:outline-hidden focus:border-[#3256a8] cursor-pointer"
+              disabled={!!activeSession}
+              className="px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 shadow-xs focus:outline-hidden focus:border-[#3256a8] cursor-pointer disabled:opacity-60"
             >
-              <option value="Data Structures">Data Structures (CS-301)</option>
-              <option value="Mathematics">Mathematics (MATH-201)</option>
-              <option value="Artificial Intelligence">Artificial Intelligence (CS-401)</option>
-              <option value="Networks">Networks (CS-303)</option>
+              {courses.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.code})
+                </option>
+              ))}
             </select>
 
-            <select
+            <input
+              type="text"
               value={selectedLecture}
               onChange={(e) => setSelectedLecture(e.target.value)}
-              className="px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 shadow-xs focus:outline-hidden focus:border-[#3256a8] cursor-pointer"
-            >
-              <option value="Lecture 12">Lecture 12</option>
-              <option value="Lecture 13">Lecture 13</option>
-              <option value="Lecture 14">Lecture 14</option>
-              <option value="Lab Section 06">Lab Section 06</option>
-            </select>
+              placeholder="Lecture label, e.g. Lecture 12"
+              disabled={!!activeSession}
+              className="px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 shadow-xs focus:outline-hidden focus:border-[#3256a8] disabled:opacity-60"
+            />
 
             <button
               id="btn-generate-qr"
               onClick={handleRegenerateQr}
-              className="px-5 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+              disabled={!!activeSession || createSession.isPending}
+              className="px-5 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Generate QR Code</span>
@@ -186,112 +253,88 @@ export const FacultyAttendanceTab: React.FC = () => {
           </div>
 
           {/* Active Generated QR State */}
-          {isQrActive ? (
+          {activeSession ? (
             <div className="mt-7 flex flex-col items-center">
+              <p className="text-xs font-semibold text-slate-600 mb-3">
+                {activeSession.courseName} · {activeSession.lectureLabel}
+              </p>
               {/* QR Code Container */}
               <div className="p-4 bg-white rounded-3xl border-2 border-[#3256a8]/30 shadow-lg inline-block relative">
                 <div className="w-48 h-48 sm:w-56 sm:h-56 bg-white p-2 rounded-2xl flex items-center justify-center">
-                  {/* High visual quality scannable SVG QR representation */}
-                  <svg
-                    viewBox="0 0 100 100"
-                    className="w-full h-full text-slate-900"
-                    fill="currentColor"
-                  >
-                    {/* Corner Position Targets */}
-                    <rect x="5" y="5" width="26" height="26" rx="4" fill="#3256a8" />
-                    <rect x="9" y="9" width="18" height="18" fill="white" />
-                    <rect x="13" y="13" width="10" height="10" fill="#3256a8" />
-
-                    <rect x="69" y="5" width="26" height="26" rx="4" fill="#3256a8" />
-                    <rect x="73" y="9" width="18" height="18" fill="white" />
-                    <rect x="77" y="13" width="10" height="10" fill="#3256a8" />
-
-                    <rect x="5" y="69" width="26" height="26" rx="4" fill="#3256a8" />
-                    <rect x="9" y="73" width="18" height="18" fill="white" />
-                    <rect x="13" y="77" width="10" height="10" fill="#3256a8" />
-
-                    {/* QR Data Pattern Dots */}
-                    <rect x="36" y="8" width="5" height="5" />
-                    <rect x="45" y="8" width="5" height="5" />
-                    <rect x="54" y="8" width="5" height="5" />
-                    <rect x="36" y="17" width="5" height="5" />
-                    <rect x="45" y="26" width="5" height="5" />
-                    <rect x="54" y="26" width="5" height="5" />
-                    <rect x="8" y="36" width="5" height="5" />
-                    <rect x="17" y="36" width="5" height="5" />
-                    <rect x="26" y="36" width="5" height="5" />
-                    <rect x="36" y="36" width="6" height="6" fill="#3256a8" />
-                    <rect x="46" y="36" width="8" height="8" />
-                    <rect x="58" y="36" width="5" height="5" fill="#3256a8" />
-                    <rect x="67" y="36" width="6" height="6" />
-                    <rect x="77" y="36" width="5" height="5" />
-                    <rect x="86" y="36" width="5" height="5" />
-
-                    <rect x="8" y="46" width="5" height="5" />
-                    <rect x="17" y="55" width="5" height="5" />
-                    <rect x="26" y="46" width="5" height="5" />
-                    <rect x="36" y="46" width="6" height="6" />
-                    <rect x="46" y="48" width="8" height="8" fill="#3256a8" />
-                    <rect x="58" y="46" width="5" height="5" />
-                    <rect x="67" y="46" width="6" height="6" />
-                    <rect x="77" y="55" width="5" height="5" />
-                    <rect x="86" y="46" width="5" height="5" />
-
-                    <rect x="36" y="58" width="5" height="5" />
-                    <rect x="45" y="58" width="5" height="5" />
-                    <rect x="54" y="58" width="5" height="5" />
-                    <rect x="36" y="69" width="5" height="5" fill="#3256a8" />
-                    <rect x="45" y="69" width="5" height="5" />
-                    <rect x="54" y="78" width="5" height="5" />
-                    <rect x="69" y="69" width="5" height="5" />
-                    <rect x="78" y="69" width="5" height="5" />
-                    <rect x="87" y="69" width="5" height="5" />
-                    <rect x="69" y="78" width="5" height="5" />
-                    <rect x="78" y="87" width="5" height="5" />
-                    <rect x="87" y="78" width="5" height="5" fill="#3256a8" />
-                  </svg>
+                  <QRCodeSVG
+                    value={checkInUrl}
+                    size={256}
+                    level="M"
+                    fgColor="#0f172a"
+                    className={`w-full h-full ${timeLeft === 0 ? 'opacity-20' : ''}`}
+                  />
                 </div>
-                <div className="absolute -top-2.5 -right-2.5 px-2.5 py-0.5 bg-emerald-500 text-white font-extrabold text-[10px] rounded-full uppercase tracking-wider shadow-xs">
-                  Active
+                <div
+                  className={`absolute -top-2.5 -right-2.5 px-2.5 py-0.5 text-white font-extrabold text-[10px] rounded-full uppercase tracking-wider shadow-xs ${
+                    timeLeft > 0 ? 'bg-emerald-500' : 'bg-slate-400'
+                  }`}
+                >
+                  {timeLeft > 0 ? 'Active' : 'Expired'}
                 </div>
               </div>
 
               {/* Live countdown */}
               <div className="mt-4 text-center">
                 <div className="text-base font-bold text-slate-800">
-                  Session expires in{' '}
-                  <span className="font-mono text-[#3256a8] font-extrabold text-lg">
-                    {formatCountdown(timeLeft)}
-                  </span>
+                  {timeLeft > 0 ? (
+                    <>
+                      Session expires in{' '}
+                      <span className="font-mono text-[#3256a8] font-extrabold text-lg">
+                        {formatCountdown(timeLeft)}
+                      </span>
+                    </>
+                  ) : (
+                    'QR expired — extend it or end the session'
+                  )}
                 </div>
-                <div className="mt-2 flex items-center justify-center">
-                  <div className="flex items-center gap-1 text-xs text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
-                    <span>Geofenced — 100m radius active</span>
+                {activeSession.geofenced && (
+                  <div className="mt-2 flex items-center justify-center">
+                    <div className="flex items-center gap-1 text-xs text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
+                      <span>Geofenced — 100m radius active</span>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Two small buttons: Extend Time & End Session */}
                 <div className="flex items-center justify-center gap-2.5 mt-3">
                   <button
                     id="btn-extend-attendance-time"
                     onClick={handleExtendTime}
-                    className="px-3.5 py-1.5 bg-white border border-slate-200 hover:border-[#3256a8] hover:text-[#3256a8] text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                    disabled={extendSession.isPending}
+                    className="px-3.5 py-1.5 bg-white border border-slate-200 hover:border-[#3256a8] hover:text-[#3256a8] text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50"
                   >
                     Extend Time
                   </button>
                   <button
                     id="btn-end-attendance-session"
                     onClick={handleEndSession}
-                    className="px-3.5 py-1.5 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                    disabled={closeSession.isPending}
+                    className="px-3.5 py-1.5 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50"
                   >
                     End Session
                   </button>
                 </div>
 
-                {/* Note */}
+                {/* Note + manual token fallback */}
                 <p className="text-[11px] text-slate-500 mt-3 font-medium">
-                  Students scan this QR from their phone browser — no app required.
+                  Students scan this QR with their phone camera, or enter the token below from their Home page.
                 </p>
+                <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-xl">
+                  <code className="text-[11px] font-mono text-slate-700 select-all break-all">{activeSession.qrToken}</code>
+                  <button
+                    type="button"
+                    onClick={handleCopyToken}
+                    className="p-1 text-slate-400 hover:text-[#3256a8] cursor-pointer"
+                    aria-label="Copy check-in token"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
@@ -310,18 +353,18 @@ export const FacultyAttendanceTab: React.FC = () => {
       <section className="bg-white rounded-3xl p-6 border border-slate-100 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.04)]">
         {/* Course Tab Strip */}
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 pb-4 mb-6">
-          {courseTabs.map((tab) => (
+          {courses.map((course) => (
             <button
-              key={tab}
-              id={`tab-attendance-${tab.toLowerCase().replace(' ', '-')}`}
-              onClick={() => setActiveCourseTab(tab)}
+              key={course.id}
+              id={`tab-attendance-${course.code.toLowerCase()}`}
+              onClick={() => setActiveCourseTab(course.id)}
               className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                activeCourseTab === tab
+                activeCourseId === course.id
                   ? 'bg-[#3256a8] text-white shadow-xs'
                   : 'bg-slate-50 text-slate-600 hover:bg-slate-100 border border-slate-200/60'
               }`}
             >
-              {tab}
+              {course.name}
             </button>
           ))}
         </div>
@@ -405,8 +448,10 @@ export const FacultyAttendanceTab: React.FC = () => {
 
                 <button
                   id="btn-manual-mark-attendance"
-                  onClick={() => setIsManualModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer"
+                  onClick={openManualModal}
+                  disabled={PAST_ATTENDANCE_SESSIONS.length === 0 || studentSummaries.length === 0}
+                  title={PAST_ATTENDANCE_SESSIONS.length === 0 ? 'No sessions yet for this course' : undefined}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Manual Mark</span>
@@ -437,7 +482,7 @@ export const FacultyAttendanceTab: React.FC = () => {
                           <td className="py-3 px-3 font-bold text-slate-900">{s.name}</td>
                           <td className="py-3 px-3 font-semibold text-emerald-700">{s.present}</td>
                           <td className="py-3 px-3 font-semibold text-rose-600">{s.absent}</td>
-                          <td className="py-3 px-3 font-bold text-slate-800">{s.rate}%</td>
+                          <td className="py-3 px-3 font-bold text-slate-800">{s.rate === null ? '—' : `${s.rate}%`}</td>
                           <td className="py-3 px-3 text-right">
                             <span
                               className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
@@ -445,6 +490,8 @@ export const FacultyAttendanceTab: React.FC = () => {
                                   ? 'text-emerald-700 bg-emerald-100/70'
                                   : s.status === 'AT RISK'
                                   ? 'text-rose-700 bg-rose-100/70'
+                                  : s.status === 'NO RECORDS'
+                                  ? 'text-slate-500 bg-slate-100'
                                   : 'text-amber-800 bg-amber-100/70'
                               }`}
                             >
@@ -484,15 +531,32 @@ export const FacultyAttendanceTab: React.FC = () => {
             <form onSubmit={handleManualMarkSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Session
+                </label>
+                <select
+                  value={manualSessionId}
+                  onChange={(e) => setManualSessionId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-medium text-slate-800 focus:outline-hidden focus:border-[#3256a8]"
+                >
+                  {PAST_ATTENDANCE_SESSIONS.map((session: { id: string; lectureNo: string; date: string }) => (
+                    <option key={session.id} value={session.id}>
+                      {session.lectureNo} — {session.date}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
                   Select Student
                 </label>
                 <select
-                  value={manualStudentName}
-                  onChange={(e) => setManualStudentName(e.target.value)}
+                  value={manualStudentId}
+                  onChange={(e) => setManualStudentId(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-medium text-slate-800 focus:outline-hidden focus:border-[#3256a8]"
                 >
                   {studentSummaries.map((s) => (
-                    <option key={s.id} value={s.name}>
+                    <option key={s.id} value={s.id}>
                       {s.name} ({s.status})
                     </option>
                   ))}
@@ -503,36 +567,31 @@ export const FacultyAttendanceTab: React.FC = () => {
                 <label className="block text-xs font-bold text-slate-700 mb-1">
                   Attendance Status
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setManualStatus('Present')}
-                    className={`py-2 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
-                      manualStatus === 'Present'
-                        ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                        : 'bg-white border-slate-200 text-slate-600'
-                    }`}
-                  >
-                    Present
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setManualStatus('Excused')}
-                    className={`py-2 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
-                      manualStatus === 'Excused'
-                        ? 'bg-blue-50 border-blue-300 text-[#3256a8]'
-                        : 'bg-white border-slate-200 text-slate-600'
-                    }`}
-                  >
-                    Excused
-                  </button>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    ['PRESENT', 'Present', 'bg-emerald-50 border-emerald-300 text-emerald-700'],
+                    ['ABSENT', 'Absent', 'bg-rose-50 border-rose-300 text-rose-700'],
+                    ['EXCUSED', 'Excused', 'bg-blue-50 border-blue-300 text-[#3256a8]'],
+                  ] as const).map(([value, label, activeClass]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setManualStatus(value)}
+                      className={`py-2 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
+                        manualStatus === value ? activeClass : 'bg-white border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
               </div>
 
               <div className="flex gap-2 pt-2">
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all cursor-pointer"
+                  disabled={markManual.isPending}
+                  className="flex-1 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50"
                 >
                   Confirm Status
                 </button>

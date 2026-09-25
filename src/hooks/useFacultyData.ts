@@ -39,7 +39,14 @@ export const useFacultyAttendanceSummary = (courseId: string | null) =>
     enabled: !!courseId,
   });
 
-export const useFacultyGrades = (courseId: string | null, assessmentTitle: string) =>
+export const useFacultyAssessments = (courseId: string | null) =>
+  useQuery({
+    queryKey: ['faculty', 'assessments', courseId],
+    queryFn: () => api.get(`/faculty/assessments?courseId=${courseId}`).then((r) => r.data),
+    enabled: !!courseId,
+  });
+
+export const useFacultyGrades =(courseId: string | null, assessmentTitle: string) =>
   useQuery({
     queryKey: ['faculty', 'grades', courseId, assessmentTitle],
     queryFn: () =>
@@ -111,6 +118,30 @@ export const useCreateAttendanceSession = () => {
   return useMutation({
     mutationFn: (payload: { courseId: string; lectureLabel: string; latitude?: number; longitude?: number; radiusMeters?: number }) =>
       api.post('/faculty/attendance/session', payload).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'attendance'] }),
+  });
+};
+
+export const useExtendAttendanceSession = () =>
+  useMutation({
+    mutationFn: (sessionId: string) =>
+      api.post(`/faculty/attendance/session/${sessionId}/extend`).then((r) => r.data),
+  });
+
+export const useCloseAttendanceSession = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      api.post(`/faculty/attendance/session/${sessionId}/close`).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'attendance'] }),
+  });
+};
+
+export const useMarkAttendanceManual = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { sessionId: string; studentId: string; status: 'PRESENT' | 'ABSENT' | 'EXCUSED' }) =>
+      api.post('/faculty/attendance/mark-manual', payload).then((r) => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'attendance'] }),
   });
 };

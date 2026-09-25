@@ -19,8 +19,10 @@ import { useFacultyCommunity, useFacultyCourses } from '../../hooks/useFacultyDa
 import { useEffect } from 'react';
 
 export const FacultyCommunityTab: React.FC = () => {
-  const [activeCourse, setActiveCourse] = useState('Data Structures');
   const { data: coursesData } = useFacultyCourses();
+  const courseTabs: string[] = (coursesData ?? []).map((c: { name: string }) => c.name);
+  const [selectedCourse, setActiveCourse] = useState<string | null>(null);
+  const activeCourse = selectedCourse ?? courseTabs[0] ?? '';
   const activeCourseId =
     coursesData?.find((c: { name: string; id: string }) => c.name === activeCourse)?.id ?? null;
   const { data: postsData, isLoading } = useFacultyCommunity(activeCourseId);
@@ -52,7 +54,6 @@ export const FacultyCommunityTab: React.FC = () => {
     );
   }
 
-  const courseTabs = ['Data Structures', 'Mathematics', 'AI', 'Networks'];
 
   const showToast = (msg: string) => {
     setToastMessage(msg);

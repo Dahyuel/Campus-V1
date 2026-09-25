@@ -71,7 +71,7 @@ export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
     return true;
   }).sort((a, b) => {
     if (sortBy === 'Name') return a.name.localeCompare(b.name);
-    if (sortBy === 'GPA') return b.gpa - a.gpa;
+    if (sortBy === 'GPA') return (b.gpa ?? -1) - (a.gpa ?? -1);
     if (sortBy === 'Attendance') return b.attendance - a.attendance;
     if (sortBy === 'Risk Level') {
       const riskWeight = (s: string) => (s === 'AT RISK' ? 3 : s === 'WARNING' ? 2 : 1);
@@ -266,10 +266,10 @@ export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
                       </span>
                     </td>
                     <td className="py-3.5 px-4 font-semibold text-slate-800">
-                      {student.currentGrade}/100
+                      {student.currentGrade === null ? '—' : `${student.currentGrade}/100`}
                     </td>
                     <td className="py-3.5 px-4 font-bold text-slate-900">
-                      {student.gpa.toFixed(1)}
+                      {student.gpa === null ? '—' : student.gpa.toFixed(1)}
                     </td>
                     <td className="py-3.5 px-4">
                       <span
@@ -344,7 +344,7 @@ export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
                 </div>
                 <div>
                   <span className="text-slate-400 font-medium">Cumulative GPA</span>
-                  <p className="font-bold text-slate-800">{selectedStudent.gpa.toFixed(2)} / 4.0</p>
+                  <p className="font-bold text-slate-800">{selectedStudent.gpa === null ? '—' : `${selectedStudent.gpa.toFixed(2)} / 4.0`}</p>
                 </div>
                 <div>
                   <span className="text-slate-400 font-medium">Attendance Rate</span>
@@ -352,7 +352,7 @@ export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
                 </div>
                 <div>
                   <span className="text-slate-400 font-medium">Current Grade</span>
-                  <p className="font-bold text-slate-800">{selectedStudent.currentGrade} / 100</p>
+                  <p className="font-bold text-slate-800">{selectedStudent.currentGrade === null ? '—' : `${selectedStudent.currentGrade} / 100`}</p>
                 </div>
               </div>
             </div>

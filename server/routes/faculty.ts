@@ -50,7 +50,7 @@ interface RawAssessmentRow extends Record<string, unknown> {
   grade_status: string | null;
 }
 
-function computeCourseAverage(assessments: RawAssessmentRow[]): number {
+function computeCourseAverage(assessments: RawAssessmentRow[]): number | null {
   let weightedPoints = 0;
   let releasedWeight = 0;
   for (const a of assessments) {
@@ -60,7 +60,7 @@ function computeCourseAverage(assessments: RawAssessmentRow[]): number {
       releasedWeight += weight;
     }
   }
-  if (releasedWeight === 0) return 0;
+  if (releasedWeight === 0) return null;
   return Math.round(weightedPoints / releasedWeight);
 }
 
@@ -257,6 +257,29 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
     );
   });
 
+  fastify.get('/assessments', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { courseId } = request.query as { courseId?: string };
+    if (!courseId || !(await assertCourseOwned(facultyId, courseId))) {
+      return reply.status(403).send({ error: 'Forbidden' });
+    }
+    const rows = await query<{ id: string; title: string; type: string; weight_pct: string; out_of: number | null }>(
+      `SELECT id, title, type, weight_pct, out_of FROM assessments
+       WHERE course_id = $1
+       ORDER BY display_order, title`,
+      [courseId]
+    );
+    return reply.status(200).send(
+      rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        type: r.type,
+        weight: r.weight_pct,
+        outOf: r.out_of ?? 100,
+      }))
+    );
+  });
+
   fastify.get('/materials', async (request, reply) => {
     const facultyId = request.user!.id;
     const rows = await query<{
@@ -415,24 +438,36 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
 
     const courseIds = [...new Set(students.map((s) => s.course_id))];
     const emptyIds = ['00000000-0000-0000-0000-000000000000'];
-    const assessments = await query<RawAssessmentRow>(
-      `SELECT a.course_id, a.weight_pct, a.out_of, g.grade, g.status AS grade_status
+    const assessments = await query<RawAssessmentRow & { student_id: string }>(
+      `SELECT a.course_id, a.weight_pct, a.out_of, g.grade, g.status AS grade_status, g.student_id
        FROM assessments a
-       LEFT JOIN grades g ON g.assessment_id = a.id
+       JOIN grades g ON g.assessment_id = a.id
        WHERE a.course_id = ANY($1::uuid[])`,
       [courseIds.length ? courseIds : emptyIds]
     );
 
+    const studentIds = [...new Set(students.map((s) => s.id))];
+    const gpaRows = await query<{ student_id: string; gpa: string }>(
+      `SELECT student_id, AVG(gpa_points::numeric) AS gpa
+       FROM transcript_entries
+       WHERE student_id = ANY($1::uuid[]) AND gpa_points ~ '^[0-9.]+$'
+       GROUP BY student_id`,
+      [studentIds.length ? studentIds : emptyIds]
+    );
+    const gpaMap = new Map(gpaRows.map((r) => [r.student_id, Math.round(Number(r.gpa) * 100) / 100]));
+
     return reply.status(200).send(
       students.map((s) => {
-        const currentGrade = computeCourseAverage(assessments.filter((a) => a.course_id === s.course_id));
+        const currentGrade = computeCourseAverage(
+          assessments.filter((a) => a.course_id === s.course_id && a.student_id === s.id)
+        );
         const risk = flagMap.get(`${s.id}:${s.course_id}`);
         let status: 'GOOD STANDING' | 'AT RISK' | 'WARNING';
         if (risk === 'Critical' || risk === 'High') status = 'AT RISK';
         else if (risk === 'Moderate') status = 'WARNING';
         else if (s.attendance_pct < 75) status = 'WARNING';
         else status = 'GOOD STANDING';
-        const gpa = currentGrade >= 90 ? 3.8 : currentGrade >= 80 ? 3.4 : currentGrade >= 70 ? 2.9 : currentGrade >= 60 ? 2.4 : 2.1;
+        const gpa = gpaMap.get(s.id) ?? null;
         return {
           id: s.id,
           name: s.name,
@@ -460,8 +495,8 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
       present_count: number;
       absent_count: number;
     }>(
-      `SELECT id, lecture_label, session_date, present_count, absent_count
-       FROM attendance_sessions WHERE course_id = $1 ORDER BY session_date DESC`,
+      `SELECT id, lecture_label, session_date::text AS session_date, present_count, absent_count
+       FROM attendance_sessions WHERE course_id = $1 ORDER BY session_date DESC, created_at DESC`,
       [courseId]
     );
     return reply.status(200).send(
@@ -493,7 +528,7 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
     }>(
       `SELECT u.id, u.name,
               COUNT(ar.id) FILTER (WHERE ar.status = 'PRESENT') AS present,
-              COUNT(ar.id) FILTER (WHERE ar.status != 'PRESENT') AS absent
+              COUNT(ar.id) FILTER (WHERE ar.status = 'ABSENT') AS absent
        FROM enrollments e
        JOIN users u ON u.id = e.student_id
        LEFT JOIN attendance_records ar ON ar.student_id = u.id
@@ -508,8 +543,9 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
         const present = Number(r.present);
         const absent = Number(r.absent);
         const total = present + absent;
-        const rate = total > 0 ? Math.round((present / total) * 100) : 0;
-        const status = rate >= 75 ? 'GOOD' : rate >= 60 ? 'WARNING' : 'AT RISK';
+        const rate = total > 0 ? Math.round((present / total) * 100) : null;
+        const status =
+          rate === null ? 'NO RECORDS' : rate >= 75 ? 'GOOD' : rate >= 60 ? 'WARNING' : 'AT RISK';
         return { id: r.id, name: r.name, present, absent, rate, status };
       })
     );
@@ -551,17 +587,20 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
   fastify.post('/attendance/session/:sessionId/extend', async (request, reply) => {
     const facultyId = request.user!.id;
     const { sessionId } = request.params as { sessionId: string };
-    const rows = await query<{ qr_token: string | null; course_id: string }>(
-      `SELECT qr_token, course_id FROM attendance_sessions WHERE id = $1 AND faculty_id = $2 LIMIT 1`,
+    const rows = await query<{ qr_token: string | null; course_id: string; qr_expires_at: string | null }>(
+      `SELECT qr_token, course_id, qr_expires_at FROM attendance_sessions WHERE id = $1 AND faculty_id = $2 LIMIT 1`,
       [sessionId, facultyId]
     );
     if (!rows[0] || !rows[0].qr_token) {
       return reply.status(404).send({ error: 'Session not found' });
     }
-    const newExpiry = new Date(Date.now() + 300 * 1000);
+    // Add 5 minutes to whatever time is left (or to now, if already expired)
+    const currentExpiry = rows[0].qr_expires_at ? new Date(rows[0].qr_expires_at).getTime() : 0;
+    const newExpiry = new Date(Math.max(currentExpiry, Date.now()) + 300 * 1000);
+    const ttlSeconds = Math.ceil((newExpiry.getTime() - Date.now()) / 1000);
     await redis.setex(
       qrKey(rows[0].qr_token),
-      300,
+      ttlSeconds,
       JSON.stringify({ sessionId, courseId: rows[0].course_id, facultyId })
     );
     await query(`UPDATE attendance_sessions SET qr_expires_at = $1 WHERE id = $2`, [newExpiry.toISOString(), sessionId]);
@@ -577,9 +616,19 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
     );
     if (!rows[0]) return reply.status(404).send({ error: 'Session not found' });
     if (rows[0].qr_token) await redis.del(qrKey(rows[0].qr_token));
+    // Enrolled students who never checked in are absent
+    await query(
+      `INSERT INTO attendance_records (session_id, student_id, status, method)
+       SELECT $1, e.student_id, 'ABSENT', 'AUTO'
+       FROM enrollments e
+       JOIN attendance_sessions s ON s.id = $1 AND s.course_id = e.course_id
+       WHERE e.status IS DISTINCT FROM 'DROPPED'
+       ON CONFLICT (session_id, student_id) DO NOTHING`,
+      [sessionId]
+    );
     const counts = await query<{ present: string; absent: string }>(
       `SELECT COUNT(*) FILTER (WHERE status = 'PRESENT') AS present,
-              COUNT(*) FILTER (WHERE status != 'PRESENT') AS absent
+              COUNT(*) FILTER (WHERE status = 'ABSENT') AS absent
        FROM attendance_records WHERE session_id = $1`,
       [sessionId]
     );
@@ -622,42 +671,43 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
 
   fastify.post('/attendance/mark-manual', async (request, reply) => {
     const facultyId = request.user!.id;
-    const { sessionId, studentName, status } = request.body as {
+    const { sessionId, studentId, status } = request.body as {
       sessionId: string;
-      studentName: string;
+      studentId: string;
       status: string;
     };
+    if (!['PRESENT', 'ABSENT', 'EXCUSED'].includes(status)) {
+      return reply.status(400).send({ error: 'Invalid status' });
+    }
     const sessionRows = await query<{ course_id: string }>(
-      `SELECT course_id FROM attendance_sessions WHERE id = $1 AND faculty_id = $2 LIMIT 1`,
+      `SELECT s.course_id FROM attendance_sessions s
+       JOIN faculty_course_assignments fca ON fca.course_id = s.course_id AND fca.faculty_id = $2
+       WHERE s.id = $1 LIMIT 1`,
       [sessionId, facultyId]
     );
     if (!sessionRows[0]) return reply.status(403).send({ error: 'Forbidden' });
-    const studentRows = await query<{ id: string }>(`SELECT id FROM users WHERE name = $1 LIMIT 1`, [studentName]);
-    if (!studentRows[0]) return reply.status(404).send({ error: 'Student not found' });
+    const enrolled = await query<{ id: string }>(
+      `SELECT id FROM enrollments WHERE course_id = $1 AND student_id = $2 LIMIT 1`,
+      [sessionRows[0].course_id, studentId]
+    );
+    if (!enrolled[0]) return reply.status(404).send({ error: 'Student not enrolled in this course' });
     await query(
       `INSERT INTO attendance_records (session_id, student_id, status, method)
        VALUES ($1, $2, $3, 'MANUAL')
        ON CONFLICT (session_id, student_id) DO UPDATE SET status = EXCLUDED.status, method = 'MANUAL'`,
-      [sessionId, studentRows[0].id, status]
+      [sessionId, studentId, status]
     );
-    const summary = await query<{ present: string; absent: string }>(
+    const counts = await query<{ present: string; absent: string }>(
       `SELECT COUNT(*) FILTER (WHERE status = 'PRESENT') AS present,
-              COUNT(*) FILTER (WHERE status != 'PRESENT') AS absent
-       FROM attendance_records WHERE session_id = $1 AND student_id = $2`,
-      [sessionId, studentRows[0].id]
+              COUNT(*) FILTER (WHERE status = 'ABSENT') AS absent
+       FROM attendance_records WHERE session_id = $1`,
+      [sessionId]
     );
-    const present = Number(summary[0].present);
-    const absent = Number(summary[0].absent);
-    const total = present + absent;
-    const rate = total > 0 ? Math.round((present / total) * 100) : 0;
-    return reply.status(200).send({
-      id: studentRows[0].id,
-      name: studentName,
-      present,
-      absent,
-      rate,
-      status: rate >= 75 ? 'GOOD' : rate >= 60 ? 'WARNING' : 'AT RISK',
-    });
+    await query(
+      `UPDATE attendance_sessions SET present_count = $1, absent_count = $2 WHERE id = $3 AND is_open = false`,
+      [Number(counts[0].present), Number(counts[0].absent), sessionId]
+    );
+    return reply.status(200).send({ message: 'Marked' });
   });
 
   fastify.get('/grades', async (request, reply) => {

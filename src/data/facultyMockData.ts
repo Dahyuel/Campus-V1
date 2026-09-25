@@ -112,8 +112,8 @@ export interface FacultyStudentRow {
   studentId: string;
   course: string;
   attendance: number;
-  currentGrade: number;
-  gpa: number;
+  currentGrade: number | null;
+  gpa: number | null;
   status: 'GOOD STANDING' | 'AT RISK' | 'WARNING';
 }
 
@@ -220,8 +220,8 @@ export interface StudentAttendanceSummary {
   name: string;
   present: number;
   absent: number;
-  rate: number;
-  status: 'GOOD' | 'AT RISK' | 'WARNING';
+  rate: number | null;
+  status: 'GOOD' | 'AT RISK' | 'WARNING' | 'NO RECORDS';
 }
 
 export const STUDENT_ATTENDANCE_SUMMARY: StudentAttendanceSummary[] = [
