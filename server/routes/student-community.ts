@@ -136,7 +136,8 @@ export default async function studentCommunityRoutes(fastify: FastifyInstance): 
         upvotes: r.upvotes,
         repliesCount: 0,
         isPinned: r.is_pinned,
-        aiResponse: r.ai_answer
+        // Faculty flagged the AI answer as wrong: don't show it to students
+        aiResponse: r.ai_answer && r.ai_status !== 'correction_needed'
           ? {
               answer: escapeHtml(r.ai_answer),
               citation: escapeHtml(r.ai_citation ?? ''),

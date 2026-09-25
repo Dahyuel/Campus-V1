@@ -1039,6 +1039,16 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
     return reply.status(200).send({ id: postId, aiStatus: 'approved' });
   });
 
+  fastify.patch('/community/:postId/ai-correction', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { postId } = request.params as { postId: string };
+    if (!(await assertPostOwnedByFaculty(facultyId, postId))) {
+      return reply.status(403).send({ error: 'Post not found or not assigned to faculty' });
+    }
+    await query(`UPDATE community_posts SET ai_status = 'correction_needed' WHERE id = $1`, [postId]);
+    return reply.status(200).send({ id: postId, aiStatus: 'correction_needed' });
+  });
+
   fastify.patch('/community/:postId/pin', async (request, reply) => {
     const facultyId = request.user!.id;
     const { postId } = request.params as { postId: string };

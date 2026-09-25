@@ -15,8 +15,14 @@ import {
   X
 } from 'lucide-react';
 import { FacultyCommunityPost } from '../../data/facultyMockData';
-import { useFacultyCommunity, useFacultyCourses } from '../../hooks/useFacultyData';
-import { useEffect } from 'react';
+import {
+  useFacultyCommunity,
+  useFacultyCourses,
+  useTogglePinPost,
+  useApproveAiAnswer,
+  useFlagAiCorrection,
+  useRemovePost,
+} from '../../hooks/useFacultyData';
 
 export const FacultyCommunityTab: React.FC = () => {
   const { data: coursesData } = useFacultyCourses();
@@ -26,12 +32,12 @@ export const FacultyCommunityTab: React.FC = () => {
   const activeCourseId =
     coursesData?.find((c: { name: string; id: string }) => c.name === activeCourse)?.id ?? null;
   const { data: postsData, isLoading } = useFacultyCommunity(activeCourseId);
-  const [posts, setPosts] = useState<FacultyCommunityPost[]>([]);
+  const posts: FacultyCommunityPost[] = postsData ?? [];
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (postsData) setPosts(postsData);
-  }, [postsData, activeCourse]);
+  const togglePin = useTogglePinPost();
+  const approveAi = useApproveAiAnswer();
+  const flagAiCorrection = useFlagAiCorrection();
+  const removePost = useRemovePost();
 
   // Settings state
   const [allowAnonymous, setAllowAnonymous] = useState(true);
@@ -39,7 +45,6 @@ export const FacultyCommunityTab: React.FC = () => {
   const [postNotifications, setPostNotifications] = useState(true);
 
   // Moderation state
-  const [pendingApprovalsCount, setPendingApprovalsCount] = useState(5);
   const [flaggedPosts, setFlaggedPosts] = useState([
     { id: 'flag-1', title: 'Unauthorized exam question sharing rumor', author: 'Anonymous' },
     { id: 'flag-2', title: 'Off-topic group study link flagged by student', author: 'Nour Ali' },
@@ -54,70 +59,49 @@ export const FacultyCommunityTab: React.FC = () => {
     );
   }
 
+  const awaitingAiPosts = posts.filter((p) => p.aiResponse?.status === 'awaiting_approval');
+  const pendingApprovalsCount = awaitingAiPosts.length;
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleTogglePin = (postId: string) => {
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.id === postId) {
-          const nextPin = !p.isPinned;
-          showToast(nextPin ? 'Pinned thread to top of feed' : 'Unpinned thread');
-          return { ...p, isPinned: nextPin };
-        }
-        return p;
-      })
-    );
+  const handleTogglePin = async (postId: string) => {
+    try {
+      const result = (await togglePin.mutateAsync(postId)) as { isPinned: boolean };
+      showToast(result.isPinned ? 'Pinned thread to top of feed' : 'Unpinned thread');
+    } catch {
+      showToast('Failed to update pin.');
+    }
   };
 
-  const handleMarkVerified = (postId: string) => {
-    showToast('Marked discussion answer as faculty-verified');
+  const handleApproveAi = async (postId: string) => {
+    try {
+      await approveAi.mutateAsync(postId);
+      showToast('Approved Campus AI answer. Students now see it as faculty approved.');
+    } catch {
+      showToast('Failed to approve AI answer.');
+    }
   };
 
-  const handleApproveAi = (postId: string) => {
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.id === postId && p.aiResponse) {
-          showToast('Approved Campus AI answer! Citation verified for students.');
-          return {
-            ...p,
-            aiResponse: {
-              ...p.aiResponse,
-              status: 'approved',
-            },
-          };
-        }
-        return p;
-      })
-    );
-    setPendingApprovalsCount((c) => Math.max(0, c - 1));
+  const handleCorrectionNeeded = async (postId: string) => {
+    try {
+      await flagAiCorrection.mutateAsync(postId);
+      showToast('AI answer flagged and hidden from students.');
+    } catch {
+      showToast('Failed to flag AI answer.');
+    }
   };
 
-  const handleCorrectionNeeded = (postId: string) => {
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.id === postId && p.aiResponse) {
-          showToast('Flagged AI answer for curriculum team review.');
-          return {
-            ...p,
-            aiResponse: {
-              ...p.aiResponse,
-              status: 'correction_needed',
-            },
-          };
-        }
-        return p;
-      })
-    );
-    setPendingApprovalsCount((c) => Math.max(0, c - 1));
-  };
-
-  const handleDeletePost = (postId: string) => {
-    setPosts((prev) => prev.filter((p) => p.id !== postId));
-    showToast('Post removed by faculty moderator');
+  const handleDeletePost = async (postId: string) => {
+    if (!window.confirm('Remove this post from the course community? Students will no longer see it.')) return;
+    try {
+      await removePost.mutateAsync(postId);
+      showToast('Post removed by faculty moderator');
+    } catch {
+      showToast('Failed to remove post.');
+    }
   };
 
   const handleReviewFlagged = (id: string) => {
@@ -125,20 +109,15 @@ export const FacultyCommunityTab: React.FC = () => {
     showToast('Flagged item resolved');
   };
 
-  const handleReviewAllAi = () => {
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.aiResponse && p.aiResponse.status === 'awaiting_approval') {
-          return {
-            ...p,
-            aiResponse: { ...p.aiResponse, status: 'approved' },
-          };
-        }
-        return p;
-      })
+  const handleReviewAllAi = async () => {
+    if (awaitingAiPosts.length === 0) return;
+    const results = await Promise.allSettled(awaitingAiPosts.map((p) => approveAi.mutateAsync(p.id)));
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    showToast(
+      failed === 0
+        ? `Approved ${results.length} pending AI responses`
+        : `Approved ${results.length - failed} of ${results.length}; ${failed} failed`
     );
-    setPendingApprovalsCount(0);
-    showToast('All pending AI responses approved');
   };
 
   return (
@@ -329,15 +308,6 @@ export const FacultyCommunityTab: React.FC = () => {
                     <Pin className="w-3 h-3" />
                     <span>{post.isPinned ? 'Unpin' : 'Pin Post'}</span>
                   </button>
-
-                  <button
-                    id={`btn-verify-answer-${post.id}`}
-                    onClick={() => handleMarkVerified(post.id)}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-slate-200 hover:border-emerald-600 hover:text-emerald-700 rounded-lg text-xs font-semibold text-slate-700 transition-all cursor-pointer"
-                  >
-                    <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                    <span>Mark Answer Verified</span>
-                  </button>
                 </div>
 
                 <button
@@ -407,9 +377,10 @@ export const FacultyCommunityTab: React.FC = () => {
               <button
                 id="btn-review-all-ai"
                 onClick={handleReviewAllAi}
-                className="px-3 py-1.5 bg-white border border-slate-200 hover:border-[#3256a8] hover:text-[#3256a8] text-xs font-bold rounded-xl transition-all cursor-pointer"
+                disabled={pendingApprovalsCount === 0 || approveAi.isPending}
+                className="px-3 py-1.5 bg-white border border-slate-200 hover:border-[#3256a8] hover:text-[#3256a8] text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Review All
+                Approve All
               </button>
             </div>
 

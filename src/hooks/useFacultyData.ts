@@ -146,6 +146,26 @@ export const useMarkAttendanceManual = () => {
   });
 };
 
+const useCommunityPostAction = (action: (postId: string) => Promise<unknown>) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: action,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'community'] }),
+  });
+};
+
+export const useTogglePinPost = () =>
+  useCommunityPostAction((postId) => api.patch(`/faculty/community/${postId}/pin`).then((r) => r.data));
+
+export const useApproveAiAnswer = () =>
+  useCommunityPostAction((postId) => api.patch(`/faculty/community/${postId}/approve-ai`).then((r) => r.data));
+
+export const useFlagAiCorrection = () =>
+  useCommunityPostAction((postId) => api.patch(`/faculty/community/${postId}/ai-correction`).then((r) => r.data));
+
+export const useRemovePost = () =>
+  useCommunityPostAction((postId) => api.delete(`/faculty/community/${postId}`).then((r) => r.data));
+
 export const useSendMessage = () => {
   const qc = useQueryClient();
   return useMutation({
