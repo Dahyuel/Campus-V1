@@ -292,6 +292,28 @@ export const AdminStudentsTab: React.FC<{ searchQuery?: string }> = ({ searchQue
     return matchesSearch && matchesDept && matchesStanding;
   });
 
+  const handleExportCsv = () => {
+    const header = ['Name', 'Student ID', 'Email', 'Program', 'Department', 'GPA', 'Attendance', 'Standing'];
+    const escapeCell = (value: string | number | null) => {
+      const text = value === null ? '' : String(value);
+      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const rows = filteredStudents.map((s) =>
+      [s.name, s.studentId, s.email, s.program, s.department, s.gpa.toFixed(1), s.attendance, s.standing]
+        .map(escapeCell)
+        .join(',')
+    );
+    // BOM so Excel reads UTF-8 names correctly
+    const csv = `﻿${[header.join(','), ...rows].join('\r\n')}`;
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `student-roster-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast(`Exported ${filteredStudents.length} row${filteredStudents.length === 1 ? '' : 's'} to CSV`);
+  };
+
   const handleApproveRegistration = (id: string, name: string) => {
     setRegistrations((prev) =>
       prev.map((r) => (r.id === id ? { ...r, status: 'approved' } : r))
@@ -476,11 +498,11 @@ export const AdminStudentsTab: React.FC<{ searchQuery?: string }> = ({ searchQue
           {/* Right action buttons */}
           <div className="flex items-center gap-2.5 shrink-0">
             <button
-              onClick={() => showToast('Student roster exported to Excel (.xlsx)')}
+              onClick={handleExportCsv}
               className="px-4 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
             >
               <Download className="w-3.5 h-3.5 text-slate-500" />
-              <span>Export List</span>
+              <span>Export List (.csv)</span>
             </button>
             <button
               onClick={() => setIsAddModalOpen(true)}

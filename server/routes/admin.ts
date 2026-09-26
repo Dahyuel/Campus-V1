@@ -502,15 +502,15 @@ export default async function adminRoutes(fastify: FastifyInstance): Promise<voi
        ORDER BY c.code`
     );
 
-    const rosterRows = await query<{ course_id: string; id: string; name: string; code_id: string; enrolled_at: string | null }>(
-      `SELECT e.course_id, u.id, u.name, u.code_id, e.enrolled_at
+    const rosterRows = await query<{ course_id: string; enrollment_id: string; id: string; name: string; code_id: string; enrolled_at: string | null }>(
+      `SELECT e.course_id, e.id AS enrollment_id, u.id, u.name, u.code_id, e.enrolled_at
        FROM enrollments e JOIN users u ON u.id = e.student_id
        WHERE e.status != 'DROPPED'`
     );
-    const rosterByCourse = new Map<string, { id: string; name: string; studentId: string; date: string }[]>();
+    const rosterByCourse = new Map<string, { id: string; enrollmentId: string; name: string; studentId: string; date: string }[]>();
     for (const r of rosterRows) {
       const list = rosterByCourse.get(r.course_id) ?? [];
-      list.push({ id: r.id, name: r.name, studentId: r.code_id, date: r.enrolled_at ? fmtDate(r.enrolled_at) : '—' });
+      list.push({ id: r.id, enrollmentId: r.enrollment_id, name: r.name, studentId: r.code_id, date: r.enrolled_at ? fmtDate(r.enrolled_at) : '—' });
       rosterByCourse.set(r.course_id, list);
     }
 
@@ -682,8 +682,8 @@ export default async function adminRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.get('/exams', async (_request, reply) => {
-    const rows = await query<{ id: string; course: string | null; code: string | null; exam_date: string; time_slot: string; room: string | null; invigilator: string | null; status: string; students: string }>(
-      `SELECT es.id, c.name AS course, c.code, es.exam_date, es.time_slot, r.name AS room, u.name AS invigilator, es.status,
+    const rows = await query<{ id: string; course: string | null; code: string | null; exam_date: string; exam_date_iso: string; time_slot: string; room: string | null; invigilator: string | null; status: string; students: string }>(
+      `SELECT es.id, c.name AS course, c.code, es.exam_date, to_char(es.exam_date, 'YYYY-MM-DD') AS exam_date_iso, es.time_slot, r.name AS room, u.name AS invigilator, es.status,
               (SELECT COUNT(*)::text FROM enrollments e WHERE e.course_id = es.course_id AND e.status != 'DROPPED') AS students
        FROM exam_schedule es
        LEFT JOIN courses c ON c.id = es.course_id
@@ -697,6 +697,7 @@ export default async function adminRoutes(fastify: FastifyInstance): Promise<voi
       course: escapeHtml(e.course ?? 'Unknown'),
       code: escapeHtml(e.code ?? '—'),
       date: fmtDate(e.exam_date),
+      examDate: e.exam_date_iso,
       time: escapeHtml(e.time_slot),
       room: escapeHtml(e.room ?? 'Unassigned'),
       invigilator: escapeHtml(e.invigilator ?? 'Unassigned'),
@@ -714,7 +715,7 @@ export default async function adminRoutes(fastify: FastifyInstance): Promise<voi
     const bookings = await query<{ room_id: string; exam_date: string }>(`SELECT room_id, exam_date FROM exam_schedule`);
     const bookedSet = new Set(bookings.map((b) => `${b.room_id}|${new Date(b.exam_date).getUTCDay()}`));
     const roomSchedule = roomRows.map((r) => {
-      const row: Record<string, string | number> = { room: escapeHtml(r.name), capacity: r.capacity };
+      const row: Record<string, string | number> = { id: r.id, room: escapeHtml(r.name), capacity: r.capacity };
       days.forEach((d, i) => {
         const jsDay = i === 6 ? 0 : i + 1;
         row[d] = bookedSet.has(`${r.id}|${jsDay}`) ? 'BOOKED' : 'FREE';

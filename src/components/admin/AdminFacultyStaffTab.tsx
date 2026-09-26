@@ -25,6 +25,7 @@ import {
   useAdminStaff,
   useAdminLeaveRequests,
   useUpdateLeaveRequest,
+  useCreateFaculty,
 } from '../../hooks/useAdminData';
 
 interface FacultyRecord {
@@ -214,6 +215,7 @@ export const AdminFacultyStaffTab: React.FC<{ searchQuery?: string }> = ({ searc
   const { data: staffData } = useAdminStaff();
   const { data: leaveData } = useAdminLeaveRequests();
   const updateLeave = useUpdateLeaveRequest();
+  const createFaculty = useCreateFaculty();
   const [activeView, setActiveView] = useState<'faculty' | 'staff'>('faculty');
   const [facultyList, setFacultyList] = useState<FacultyRecord[]>(INITIAL_FACULTY);
   const [staffList, setStaffList] = useState<StaffRecord[]>(INITIAL_STAFF);
@@ -232,6 +234,16 @@ export const AdminFacultyStaffTab: React.FC<{ searchQuery?: string }> = ({ searc
   // Selected faculty for side panel
   const [selectedFaculty, setSelectedFaculty] = useState<FacultyRecord | null>(null);
 
+  // Modal for Add New Faculty
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [newFacultyForm, setNewFacultyForm] = useState({
+    name: '',
+    email: '',
+    department: 'CS Dept',
+    title: 'Lecturer',
+    phone: '',
+  });
+
   // Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const showToast = (msg: string) => {
@@ -239,18 +251,47 @@ export const AdminFacultyStaffTab: React.FC<{ searchQuery?: string }> = ({ searc
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const handleApproveLeave = (id: string, name: string) => {
-    setLeaveRequests((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, status: 'approved' } : r))
-    );
-    showToast(`Leave request for ${name} approved.`);
+  const setLeaveStatus = async (id: string, name: string, status: 'approved' | 'rejected') => {
+    const previous = leaveRequests.find((r) => r.id === id)?.status;
+    setLeaveRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status } : r)));
+    try {
+      await updateLeave.mutateAsync({ id, status });
+      showToast(`Leave request for ${name} ${status}.`);
+    } catch {
+      if (previous) {
+        setLeaveRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status: previous } : r)));
+      }
+      showToast(`Could not update leave request for ${name}. Please try again.`);
+    }
   };
 
-  const handleRejectLeave = (id: string, name: string) => {
-    setLeaveRequests((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, status: 'rejected' } : r))
-    );
-    showToast(`Leave request for ${name} rejected.`);
+  const handleApproveLeave = (id: string, name: string) => setLeaveStatus(id, name, 'approved');
+
+  const handleRejectLeave = (id: string, name: string) => setLeaveStatus(id, name, 'rejected');
+
+  const handleCreateFaculty = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newFacultyForm.name) return;
+    try {
+      const result = await createFaculty.mutateAsync({
+        name: newFacultyForm.name,
+        email: newFacultyForm.email || undefined,
+        department: newFacultyForm.department,
+        title: newFacultyForm.title,
+        phone: newFacultyForm.phone || undefined,
+      });
+      showToast("Faculty created. Temp password: " + result.tempPassword);
+    } catch {
+      showToast("Failed to create faculty.");
+    }
+    setIsAddModalOpen(false);
+    setNewFacultyForm({
+      name: "",
+      email: "",
+      department: "CS Dept",
+      title: "Lecturer",
+      phone: "",
+    });
   };
 
   const filteredFaculty = facultyList.filter((f) => {
@@ -267,6 +308,35 @@ export const AdminFacultyStaffTab: React.FC<{ searchQuery?: string }> = ({ searc
 
     return matchesSearch && matchesDept && matchesRole && matchesStatus;
   });
+
+  const handleExportCsv = () => {
+    const escapeCell = (value: string | number | null) => {
+      const text = value === null ? '' : String(value);
+      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const isFaculty = activeView === 'faculty';
+    const header = isFaculty
+      ? ['Name', 'Email', 'ID', 'Department', 'Title', 'Courses', 'Students', 'Load Hours', 'Status']
+      : ['Name', 'ID', 'Department', 'Role', 'Shift Schedule', 'Status'];
+    const rows = isFaculty
+      ? filteredFaculty.map((f) =>
+          [f.name, f.email, f.codeId, f.department, f.title, f.coursesCount, f.studentsCount, f.loadHours, f.status]
+            .map(escapeCell)
+            .join(',')
+        )
+      : staffList.map((s) =>
+          [s.name, s.codeId, s.department, s.role, s.shift, s.status].map(escapeCell).join(',')
+        );
+    // BOM so Excel reads UTF-8 names correctly
+    const csv = `﻿${[header.join(','), ...rows].join('\r\n')}`;
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${isFaculty ? 'faculty' : 'staff'}-directory-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast(`Exported ${rows.length} row${rows.length === 1 ? '' : 's'} to CSV`);
+  };
 
   if (isLoading) {
     return <div className="flex items-center justify-center h-64 text-slate-400 text-sm">Loading faculty & staff...</div>;
@@ -436,14 +506,18 @@ export const AdminFacultyStaffTab: React.FC<{ searchQuery?: string }> = ({ searc
             {/* Action buttons */}
             <div className="flex items-center gap-2.5 shrink-0">
               <button
-                onClick={() => showToast('Faculty directory exported')}
+                onClick={handleExportCsv}
                 className="px-4 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5 text-slate-500" />
-                <span>Export List</span>
+                <span>Export List (.csv)</span>
               </button>
               <button
-                onClick={() => showToast('Faculty onboard modal dialog opened')}
+                onClick={() =>
+                  activeView === 'faculty'
+                    ? setIsAddModalOpen(true)
+                    : showToast('Faculty onboard modal dialog opened')
+                }
                 className="px-4 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
@@ -785,6 +859,111 @@ export const AdminFacultyStaffTab: React.FC<{ searchQuery?: string }> = ({ searc
                 Issue Dean Memo
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL: ADD NEW FACULTY                                   */}
+      {/* ======================================================== */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-lg w-full border border-slate-100 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Add New Faculty</h3>
+                <p className="text-xs text-slate-400">Onboard a faculty member into the university directory</p>
+              </div>
+              <button
+                onClick={() => setIsAddModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateFaculty} className="space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Full Name</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Dr. Laila Mansour"
+                    value={newFacultyForm.name}
+                    onChange={(e) => setNewFacultyForm({ ...newFacultyForm, name: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-hidden focus:border-[#3256a8]"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Title</label>
+                  <select
+                    value={newFacultyForm.title}
+                    onChange={(e) => setNewFacultyForm({ ...newFacultyForm, title: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-bold focus:outline-hidden focus:border-[#3256a8]"
+                  >
+                    <option value="Lecturer">Lecturer</option>
+                    <option value="Ass. Professor">Ass. Professor</option>
+                    <option value="Associate Professor">Associate Professor</option>
+                    <option value="Professor">Professor</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Department</label>
+                  <select
+                    value={newFacultyForm.department}
+                    onChange={(e) => setNewFacultyForm({ ...newFacultyForm, department: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-bold focus:outline-hidden focus:border-[#3256a8]"
+                  >
+                    <option value="CS Dept">CS Dept</option>
+                    <option value="ENG Dept">ENG Dept</option>
+                    <option value="BUS Dept">BUS Dept</option>
+                    <option value="MED Dept">MED Dept</option>
+                    <option value="LAW Dept">LAW Dept</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Email</label>
+                  <input
+                    type="email"
+                    placeholder="faculty@nilebyte.edu"
+                    value={newFacultyForm.email}
+                    onChange={(e) => setNewFacultyForm({ ...newFacultyForm, email: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-hidden focus:border-[#3256a8]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Phone Number</label>
+                <input
+                  type="text"
+                  placeholder="+20 1..."
+                  value={newFacultyForm.phone}
+                  onChange={(e) => setNewFacultyForm({ ...newFacultyForm, phone: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-hidden focus:border-[#3256a8]"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold rounded-xl"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-[#3256a8] hover:bg-[#284588] text-white font-bold rounded-xl shadow-xs"
+                >
+                  Save Faculty
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

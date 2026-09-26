@@ -26,7 +26,7 @@ interface CourseEnrollment {
   capacity: number;
   waitlisted: number;
   status: 'OPEN' | 'FULL';
-  roster: { id: string; name: string; studentId: string; date: string }[];
+  roster: { id: string; enrollmentId?: string; name: string; studentId: string; date: string }[];
   waitlistStudents: { id: string; name: string; studentId: string; position: number }[];
 }
 
@@ -213,17 +213,29 @@ export const AdminEnrollmentTab: React.FC<{ searchQuery?: string }> = ({ searchQ
     showToast(`Promoted ${studentName} to active roster.`);
   };
 
-  const handleRemoveFromRoster = (studentId: string, studentName: string) => {
+  const handleRemoveFromRoster = async (enrollmentId: string | undefined, studentName: string) => {
     if (!selectedCourse) return;
+    if (!enrollmentId) {
+      showToast(`Could not remove ${studentName}: no saved enrollment record.`);
+      return;
+    }
+    const original = selectedCourse;
     const updated = {
       ...selectedCourse,
       enrolled: Math.max(0, selectedCourse.enrolled - 1),
       status: 'OPEN' as 'OPEN' | 'FULL',
-      roster: selectedCourse.roster.filter((s) => s.studentId !== studentId),
+      roster: selectedCourse.roster.filter((s) => s.enrollmentId !== enrollmentId),
     };
     setSelectedCourse(updated);
     setCourses((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-    showToast(`Removed ${studentName} from course roster.`);
+    try {
+      await dropEnrollment.mutateAsync(enrollmentId);
+      showToast(`Removed ${studentName} from course roster.`);
+    } catch {
+      setSelectedCourse(original);
+      setCourses((prev) => prev.map((c) => (c.id === original.id ? original : c)));
+      showToast(`Could not remove ${studentName}. Please try again.`);
+    }
   };
 
   const handleBulkUpload = (e: React.FormEvent) => {
@@ -655,7 +667,7 @@ export const AdminEnrollmentTab: React.FC<{ searchQuery?: string }> = ({ searchQ
                         <span className="text-[11px] text-slate-400 font-mono">ID: {st.studentId} · Enrolled {st.date}</span>
                       </div>
                       <button
-                        onClick={() => handleRemoveFromRoster(st.studentId, st.name)}
+                        onClick={() => handleRemoveFromRoster(st.enrollmentId, st.name)}
                         className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
                         title="Remove student"
                       >

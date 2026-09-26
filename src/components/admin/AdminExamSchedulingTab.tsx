@@ -13,13 +13,37 @@ import {
   Search,
   Filter
 } from 'lucide-react';
-import { useAdminExams, useResolveConflict } from '../../hooks/useAdminData';
+import {
+  useAdminExams,
+  useResolveConflict,
+  useCreateExam,
+  useUpdateExam,
+  useAdminEnrollment,
+  useAdminFaculty,
+} from '../../hooks/useAdminData';
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// '10 Jul 2024' (API display format) -> '2024-07-10' (date input / API payload)
+function toIsoDate(display: string): string {
+  const [day, mon, year] = display.split(' ');
+  const month = MONTHS.indexOf(mon);
+  if (!year || month < 0) return '';
+  return `${year}-${String(month + 1).padStart(2, '0')}-${day.padStart(2, '0')}`;
+}
+
+// '2024-07-10' -> '10 Jul 2024'
+function toDisplayDate(iso: string): string {
+  const [year, month, day] = iso.split('-');
+  return `${Number(day)} ${MONTHS[Number(month) - 1]} ${year}`;
+}
 
 interface ExamItem {
   id: string;
   course: string;
   code: string;
   date: string;
+  examDate?: string;
   time: string;
   room: string;
   invigilator: string;
@@ -57,7 +81,13 @@ const INITIAL_CONFLICTS: ConflictItem[] = [
 
 export const AdminExamSchedulingTab: React.FC<{ searchQuery?: string }> = ({ searchQuery = '' }) => {
   const { data: examsData, isLoading } = useAdminExams();
+  const { data: coursesData } = useAdminEnrollment();
+  const { data: facultyData } = useAdminFaculty();
   const resolveConflict = useResolveConflict();
+  const createExam = useCreateExam();
+  const updateExam = useUpdateExam();
+  const courseOptions = (coursesData ?? []) as { id: string; name: string; code: string; enrolled: number }[];
+  const facultyOptions = (facultyData ?? []) as { id: string; name: string }[];
   const [exams, setExams] = useState<ExamItem[]>(INITIAL_EXAMS);
   const [conflicts, setConflicts] = useState<ConflictItem[]>(INITIAL_CONFLICTS);
   const ROOM_SCHEDULE = (examsData?.roomSchedule ?? []) as any[];
@@ -71,12 +101,12 @@ export const AdminExamSchedulingTab: React.FC<{ searchQuery?: string }> = ({ sea
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingExam, setEditingExam] = useState<ExamItem | null>(null);
 
-  const [formCourse, setFormCourse] = useState('');
-  const [formCode, setFormCode] = useState('');
-  const [formDate, setFormDate] = useState('15 Jul 2024');
+  const [formCourseId, setFormCourseId] = useState('');
+  const [formDate, setFormDate] = useState('');
   const [formTime, setFormTime] = useState('9:00 AM');
-  const [formRoom, setFormRoom] = useState('Hall A');
-  const [formInvigilator, setFormInvigilator] = useState('Dr. Ahmed Dahy');
+  const [formRoomId, setFormRoomId] = useState('');
+  const [formInvigilatorId, setFormInvigilatorId] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   // Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -90,67 +120,77 @@ export const AdminExamSchedulingTab: React.FC<{ searchQuery?: string }> = ({ sea
     showToast('Conflict successfully resolved and schedule updated.');
   };
 
-  const handleSaveExam = (e: React.FormEvent) => {
+  const handleSaveExam = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formCourse || !formCode) return;
+    if (!formDate || !formTime || !formRoomId) return;
+    if (!editingExam && (!formCourseId || !formInvigilatorId)) return;
 
-    if (editingExam) {
-      setExams((prev) =>
-        prev.map((item) =>
-          item.id === editingExam.id
-            ? {
-                ...item,
-                course: formCourse,
-                code: formCode,
-                date: formDate,
-                time: formTime,
-                room: formRoom,
-                invigilator: formInvigilator,
-                status: 'CONFIRMED',
-              }
-            : item
-        )
-      );
-      showToast(`Updated examination schedule for ${formCode}.`);
-    } else {
-      const newExam: ExamItem = {
-        id: `ex-${Date.now()}`,
-        course: formCourse,
-        code: formCode,
-        date: formDate,
-        time: formTime,
-        room: formRoom,
-        invigilator: formInvigilator,
-        students: 50,
-        status: 'CONFIRMED',
-      };
-      setExams([...exams, newExam]);
-      showToast(`Scheduled new examination for ${formCode}.`);
+    const roomName = ROOM_SCHEDULE.find((r) => r.id === formRoomId)?.room ?? 'Unassigned';
+    setIsSaving(true);
+    try {
+      if (editingExam) {
+        await updateExam.mutateAsync({
+          id: editingExam.id,
+          data: { examDate: formDate, timeSlot: formTime, roomId: formRoomId, status: 'CONFIRMED' },
+        });
+        setExams((prev) =>
+          prev.map((item) =>
+            item.id === editingExam.id
+              ? { ...item, date: toDisplayDate(formDate), examDate: formDate, time: formTime, room: roomName, status: 'CONFIRMED' }
+              : item
+          )
+        );
+        showToast(`Updated examination schedule for ${editingExam.code}.`);
+      } else {
+        const course = courseOptions.find((c) => c.id === formCourseId);
+        const result = await createExam.mutateAsync({
+          courseId: formCourseId,
+          roomId: formRoomId,
+          invigilatorId: formInvigilatorId,
+          examDate: formDate,
+          timeSlot: formTime,
+        });
+        const newExam: ExamItem = {
+          id: result.id,
+          course: course?.name ?? 'Unknown',
+          code: course?.code ?? '—',
+          date: toDisplayDate(formDate),
+          examDate: formDate,
+          time: formTime,
+          room: roomName,
+          invigilator: facultyOptions.find((f) => f.id === formInvigilatorId)?.name ?? 'Unassigned',
+          students: course?.enrolled ?? 0,
+          status: result.status,
+        };
+        setExams((prev) => [...prev, newExam]);
+        showToast(`Scheduled new examination for ${newExam.code}.`);
+      }
+      setIsModalOpen(false);
+      setEditingExam(null);
+    } catch {
+      showToast('Could not save the examination. Please try again.');
+    } finally {
+      setIsSaving(false);
     }
-
-    setIsModalOpen(false);
-    setEditingExam(null);
   };
 
   const openEdit = (exam: ExamItem) => {
     setEditingExam(exam);
-    setFormCourse(exam.course);
-    setFormCode(exam.code);
-    setFormDate(exam.date);
+    setFormCourseId('');
+    setFormDate(exam.examDate ?? toIsoDate(exam.date));
     setFormTime(exam.time);
-    setFormRoom(exam.room);
-    setFormInvigilator(exam.invigilator);
+    setFormRoomId(ROOM_SCHEDULE.find((r) => r.room === exam.room)?.id ?? '');
+    setFormInvigilatorId('');
     setIsModalOpen(true);
   };
 
   const openNew = () => {
     setEditingExam(null);
-    setFormCourse('');
-    setFormCode('');
-    setFormDate('15 Jul 2024');
+    setFormCourseId('');
+    setFormDate('');
     setFormTime('9:00 AM');
-    setFormRoom('Hall A');
-    setFormInvigilator('Dr. Ahmed Dahy');
+    setFormRoomId('');
+    setFormInvigilatorId('');
     setIsModalOpen(true);
   };
 
@@ -435,36 +475,34 @@ export const AdminExamSchedulingTab: React.FC<{ searchQuery?: string }> = ({ sea
             </div>
 
             <form onSubmit={handleSaveExam} className="space-y-4 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">Course Title</label>
-                  <input
-                    type="text"
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Course</label>
+                {editingExam ? (
+                  <div className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-slate-600 font-bold">
+                    {editingExam.course} <span className="font-mono">({editingExam.code})</span>
+                  </div>
+                ) : (
+                  <select
                     required
-                    placeholder="e.g. Operating Systems"
-                    value={formCourse}
-                    onChange={(e) => setFormCourse(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-hidden focus:border-[#3256a8]"
-                  />
-                </div>
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">Course Code</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. CS-305"
-                    value={formCode}
-                    onChange={(e) => setFormCode(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-mono focus:outline-hidden focus:border-[#3256a8]"
-                  />
-                </div>
+                    value={formCourseId}
+                    onChange={(e) => setFormCourseId(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-bold focus:outline-hidden focus:border-[#3256a8]"
+                  >
+                    <option value="">Select a course…</option>
+                    {courseOptions.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.code} — {c.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">Date</label>
                   <input
-                    type="text"
+                    type="date"
                     required
                     value={formDate}
                     onChange={(e) => setFormDate(e.target.value)}
@@ -487,31 +525,40 @@ export const AdminExamSchedulingTab: React.FC<{ searchQuery?: string }> = ({ sea
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">Examination Hall / Room</label>
                   <select
-                    value={formRoom}
-                    onChange={(e) => setFormRoom(e.target.value)}
+                    required
+                    value={formRoomId}
+                    onChange={(e) => setFormRoomId(e.target.value)}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-bold focus:outline-hidden focus:border-[#3256a8]"
                   >
-                    <option value="Hall A">Hall A (120 Seats)</option>
-                    <option value="Hall B">Hall B (100 Seats)</option>
-                    <option value="Hall C">Hall C (80 Seats)</option>
-                    <option value="Room 301">Room 301 (50 Seats)</option>
-                    <option value="Lab 2">Lab 2 (40 Seats)</option>
+                    <option value="">Select a room…</option>
+                    {ROOM_SCHEDULE.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.room} ({r.capacity} Seats)
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">Invigilator</label>
-                  <select
-                    value={formInvigilator}
-                    onChange={(e) => setFormInvigilator(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-bold focus:outline-hidden focus:border-[#3256a8]"
-                  >
-                    <option value="Dr. Ahmed Dahy">Dr. Ahmed Dahy</option>
-                    <option value="Dr. Sara Nour">Dr. Sara Nour</option>
-                    <option value="Dr. Mostafa Hagras">Dr. Mostafa Hagras</option>
-                    <option value="Dr. Omar Farid">Dr. Omar Farid</option>
-                    <option value="Dr. Nour Hassan">Dr. Nour Hassan</option>
-                    <option value="Dr. Youssef Samir">Dr. Youssef Samir</option>
-                  </select>
+                  {editingExam ? (
+                    <div className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-slate-600 font-bold">
+                      {editingExam.invigilator}
+                    </div>
+                  ) : (
+                    <select
+                      required
+                      value={formInvigilatorId}
+                      onChange={(e) => setFormInvigilatorId(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-bold focus:outline-hidden focus:border-[#3256a8]"
+                    >
+                      <option value="">Select an invigilator…</option>
+                      {facultyOptions.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               </div>
 
@@ -525,9 +572,10 @@ export const AdminExamSchedulingTab: React.FC<{ searchQuery?: string }> = ({ sea
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-[#3256a8] hover:bg-[#284588] text-white font-bold rounded-xl shadow-xs"
+                  disabled={isSaving}
+                  className="px-5 py-2 bg-[#3256a8] hover:bg-[#284588] text-white font-bold rounded-xl shadow-xs disabled:opacity-60"
                 >
-                  Confirm & Schedule
+                  {isSaving ? 'Saving…' : 'Confirm & Schedule'}
                 </button>
               </div>
             </form>

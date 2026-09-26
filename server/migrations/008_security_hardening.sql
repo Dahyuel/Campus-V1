@@ -45,34 +45,24 @@ ALTER TABLE community_posts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE course_materials ENABLE ROW LEVEL SECURITY;
 ALTER TABLE attendance_records ENABLE ROW LEVEL SECURITY;
 
--- Allow full table access to the application role (postgres / campus).
+-- Allow full table access to the application role (campus).
 -- In a multi-tenant or direct-client setup, replace these with user-scoped policies.
-CREATE POLICY users_all ON users FOR ALL TO postgres USING (true) WITH CHECK (true);
 CREATE POLICY users_all_campus ON users FOR ALL TO campus USING (true) WITH CHECK (true);
 
-CREATE POLICY enrollments_all ON enrollments FOR ALL TO postgres USING (true) WITH CHECK (true);
 CREATE POLICY enrollments_all_campus ON enrollments FOR ALL TO campus USING (true) WITH CHECK (true);
 
-CREATE POLICY grades_all ON grades FOR ALL TO postgres USING (true) WITH CHECK (true);
 CREATE POLICY grades_all_campus ON grades FOR ALL TO campus USING (true) WITH CHECK (true);
 
-CREATE POLICY messages_all ON messages FOR ALL TO postgres USING (true) WITH CHECK (true);
 CREATE POLICY messages_all_campus ON messages FOR ALL TO campus USING (true) WITH CHECK (true);
 
-CREATE POLICY notifications_all ON notifications FOR ALL TO postgres USING (true) WITH CHECK (true);
 CREATE POLICY notifications_all_campus ON notifications FOR ALL TO campus USING (true) WITH CHECK (true);
 
-CREATE POLICY tutor_sessions_all ON tutor_sessions FOR ALL TO postgres USING (true) WITH CHECK (true);
 CREATE POLICY tutor_sessions_all_campus ON tutor_sessions FOR ALL TO campus USING (true) WITH CHECK (true);
 
-CREATE POLICY tutor_messages_all ON tutor_messages FOR ALL TO postgres USING (true) WITH CHECK (true);
 CREATE POLICY tutor_messages_all_campus ON tutor_messages FOR ALL TO campus USING (true) WITH CHECK (true);
 
-CREATE POLICY community_posts_all ON community_posts FOR ALL TO postgres USING (true) WITH CHECK (true);
 CREATE POLICY community_posts_all_campus ON community_posts FOR ALL TO campus USING (true) WITH CHECK (true);
 
-CREATE POLICY course_materials_all ON course_materials FOR ALL TO postgres USING (true) WITH CHECK (true);
 CREATE POLICY course_materials_all_campus ON course_materials FOR ALL TO campus USING (true) WITH CHECK (true);
 
-CREATE POLICY attendance_records_all ON attendance_records FOR ALL TO postgres USING (true) WITH CHECK (true);
 CREATE POLICY attendance_records_all_campus ON attendance_records FOR ALL TO campus USING (true) WITH CHECK (true);
