@@ -213,6 +213,7 @@ export default async function smartScheduleRoutes(fastify: FastifyInstance): Pro
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
+      if (!res.ok) throw new Error(`schedule service responded ${res.status}`);
       generated = (await res.json()) as { slots: Array<Record<string, unknown>>; status: string };
     } catch {
       return reply.status(502).send({ error: 'Schedule service unavailable' });

@@ -14,6 +14,7 @@ import {
   Filter,
   X
 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { FacultyCommunityPost } from '../../data/facultyMockData';
 import {
   useFacultyCommunity,
@@ -22,13 +23,20 @@ import {
   useApproveAiAnswer,
   useFlagAiCorrection,
   useRemovePost,
+  useFacultyRemovedPosts,
+  useRestorePost,
+  useCommunitySettings,
+  useSaveCommunitySettings,
 } from '../../hooks/useFacultyData';
 
 export const FacultyCommunityTab: React.FC = () => {
+  const [searchParams] = useSearchParams();
   const { data: coursesData } = useFacultyCourses();
   const courseTabs: string[] = (coursesData ?? []).map((c: { name: string }) => c.name);
   const [selectedCourse, setActiveCourse] = useState<string | null>(null);
-  const activeCourse = selectedCourse ?? courseTabs[0] ?? '';
+  // Opened from a course card: start on that course
+  const urlCourseName = coursesData?.find((c: { id: string }) => c.id === searchParams.get('courseId'))?.name;
+  const activeCourse = selectedCourse ?? urlCourseName ?? courseTabs[0] ?? '';
   const activeCourseId =
     coursesData?.find((c: { name: string; id: string }) => c.name === activeCourse)?.id ?? null;
   const { data: postsData, isLoading } = useFacultyCommunity(activeCourseId);
@@ -38,18 +46,17 @@ export const FacultyCommunityTab: React.FC = () => {
   const approveAi = useApproveAiAnswer();
   const flagAiCorrection = useFlagAiCorrection();
   const removePost = useRemovePost();
+  const restorePost = useRestorePost();
+  const { data: removedData } = useFacultyRemovedPosts(activeCourseId);
+  const removedPosts: Array<{ id: string; title: string; author: string }> = removedData ?? [];
 
   // Settings state
-  const [allowAnonymous, setAllowAnonymous] = useState(true);
-  const [autoAiResponse, setAutoAiResponse] = useState(true);
-  const [postNotifications, setPostNotifications] = useState(true);
-
-  // Moderation state
-  const [flaggedPosts, setFlaggedPosts] = useState([
-    { id: 'flag-1', title: 'Unauthorized exam question sharing rumor', author: 'Anonymous' },
-    { id: 'flag-2', title: 'Off-topic group study link flagged by student', author: 'Nour Ali' },
-    { id: 'flag-3', title: 'Duplicate assignment clarification request', author: 'Layla Ahmed' },
-  ]);
+  // Course community policy, saved per course
+  const { data: settings } = useCommunitySettings(activeCourseId);
+  const saveSettings = useSaveCommunitySettings();
+  const allowAnonymous = settings?.allowAnonymous ?? true;
+  const autoAiResponse = settings?.autoAiResponse ?? true;
+  const postNotifications = settings?.postNotifications ?? true;
 
   if (isLoading) {
     return (
@@ -61,6 +68,7 @@ export const FacultyCommunityTab: React.FC = () => {
 
   const awaitingAiPosts = posts.filter((p) => p.aiResponse?.status === 'awaiting_approval');
   const pendingApprovalsCount = awaitingAiPosts.length;
+  const aiResponseCount = posts.filter((p) => p.hasAiResponse).length;
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -104,9 +112,27 @@ export const FacultyCommunityTab: React.FC = () => {
     }
   };
 
-  const handleReviewFlagged = (id: string) => {
-    setFlaggedPosts((prev) => prev.filter((f) => f.id !== id));
-    showToast('Flagged item resolved');
+  const updateSetting = async (
+    key: 'allowAnonymous' | 'autoAiResponse' | 'postNotifications',
+    value: boolean,
+    message: string
+  ) => {
+    if (!activeCourseId) return;
+    try {
+      await saveSettings.mutateAsync({ courseId: activeCourseId, [key]: value });
+      showToast(message);
+    } catch {
+      showToast('Could not save that setting.');
+    }
+  };
+
+  const handleRestorePost = async (id: string) => {
+    try {
+      await restorePost.mutateAsync(id);
+      showToast('Post restored to the feed');
+    } catch {
+      showToast('Failed to restore post.');
+    }
   };
 
   const handleReviewAllAi = async () => {
@@ -153,17 +179,17 @@ export const FacultyCommunityTab: React.FC = () => {
         <div className="flex flex-wrap items-center gap-4 sm:gap-8 p-4 bg-slate-50/70 rounded-2xl border border-slate-100 text-xs text-slate-700">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-[#3256a8]"></span>
-            <span className="font-bold text-slate-900">143 Total Posts</span>
+            <span className="font-bold text-slate-900">{posts.length} Total Posts</span>
           </div>
           <span className="text-slate-300 hidden sm:inline">·</span>
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-            <span className="font-bold text-slate-900">89 AI Responses</span>
+            <span className="font-bold text-slate-900">{aiResponseCount} AI Responses</span>
           </div>
           <span className="text-slate-300 hidden sm:inline">·</span>
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-            <span className="font-bold text-amber-700">12 Awaiting Faculty Review</span>
+            <span className="font-bold text-amber-700">{pendingApprovalsCount} Awaiting Faculty Review</span>
           </div>
         </div>
       </section>
@@ -335,13 +361,15 @@ export const FacultyCommunityTab: React.FC = () => {
               </span>
               <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
             </div>
-            <h3 className="text-base font-bold text-slate-900 tracking-tight mb-4">
-              Needs Your Attention
+            <h3 className="text-base font-bold text-slate-900 tracking-tight mb-1">
+              Removed Posts
             </h3>
+            <p className="text-[11px] text-slate-400 mb-4">
+              Hidden from students. Restore to put a post back in the feed.
+            </p>
 
-            {/* 3 posts flagged for review */}
             <div className="space-y-3">
-              {flaggedPosts.map((flag) => (
+              {removedPosts.map((flag) => (
                 <div
                   key={flag.id}
                   className="p-3 bg-slate-50/80 rounded-2xl border border-slate-100 flex items-center justify-between gap-2"
@@ -355,16 +383,17 @@ export const FacultyCommunityTab: React.FC = () => {
                     </span>
                   </div>
                   <button
-                    id={`btn-review-${flag.id}`}
-                    onClick={() => handleReviewFlagged(flag.id)}
-                    className="px-2.5 py-1 bg-[#3256a8] hover:bg-[#284588] text-white text-[11px] font-bold rounded-lg transition-all shrink-0 cursor-pointer"
+                    id={`btn-restore-${flag.id}`}
+                    onClick={() => handleRestorePost(flag.id)}
+                    disabled={restorePost.isPending}
+                    className="px-2.5 py-1 bg-[#3256a8] hover:bg-[#284588] text-white text-[11px] font-bold rounded-lg transition-all shrink-0 cursor-pointer disabled:opacity-50"
                   >
-                    Review
+                    Restore
                   </button>
                 </div>
               ))}
-              {flaggedPosts.length === 0 && (
-                <p className="text-xs text-slate-400 text-center py-2">No flagged items remaining</p>
+              {removedPosts.length === 0 && (
+                <p className="text-xs text-slate-400 text-center py-2">No removed posts</p>
               )}
             </div>
 
@@ -391,10 +420,13 @@ export const FacultyCommunityTab: React.FC = () => {
                 <p className="text-[10px] text-slate-400">Allow students to post anonymously</p>
               </div>
               <button
-                onClick={() => {
-                  setAllowAnonymous(!allowAnonymous);
-                  showToast(allowAnonymous ? 'Anonymous posting disabled' : 'Anonymous posting enabled');
-                }}
+                onClick={() =>
+                  updateSetting(
+                    'allowAnonymous',
+                    !allowAnonymous,
+                    allowAnonymous ? 'Anonymous posting disabled' : 'Anonymous posting enabled'
+                  )
+                }
                 className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors cursor-pointer ${
                   allowAnonymous ? 'bg-[#3256a8]' : 'bg-slate-200'
                 }`}
@@ -421,7 +453,13 @@ export const FacultyCommunityTab: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-slate-700 font-medium">Allow anonymous posting</span>
                 <button
-                  onClick={() => setAllowAnonymous(!allowAnonymous)}
+                  onClick={() =>
+                    updateSetting(
+                      'allowAnonymous',
+                      !allowAnonymous,
+                      allowAnonymous ? 'Anonymous posting disabled' : 'Anonymous posting enabled'
+                    )
+                  }
                   className={`w-9 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
                     allowAnonymous ? 'bg-[#3256a8]' : 'bg-slate-200'
                   }`}
@@ -437,10 +475,13 @@ export const FacultyCommunityTab: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-slate-700 font-medium">Auto-AI response on questions</span>
                 <button
-                  onClick={() => {
-                    setAutoAiResponse(!autoAiResponse);
-                    showToast(!autoAiResponse ? 'Auto-AI answers enabled' : 'Auto-AI answers disabled');
-                  }}
+                  onClick={() =>
+                    updateSetting(
+                      'autoAiResponse',
+                      !autoAiResponse,
+                      autoAiResponse ? 'Auto-AI answers disabled' : 'Auto-AI answers enabled'
+                    )
+                  }
                   className={`w-9 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
                     autoAiResponse ? 'bg-[#3256a8]' : 'bg-slate-200'
                   }`}
@@ -456,10 +497,13 @@ export const FacultyCommunityTab: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-slate-700 font-medium">New post notifications</span>
                 <button
-                  onClick={() => {
-                    setPostNotifications(!postNotifications);
-                    showToast(!postNotifications ? 'Post notifications enabled' : 'Post notifications muted');
-                  }}
+                  onClick={() =>
+                    updateSetting(
+                      'postNotifications',
+                      !postNotifications,
+                      postNotifications ? 'Post notifications muted' : 'Post notifications enabled'
+                    )
+                  }
                   className={`w-9 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
                     postNotifications ? 'bg-[#3256a8]' : 'bg-slate-200'
                   }`}

@@ -107,7 +107,9 @@ export const FACULTY_MATERIALS: CourseMaterialRow[] = [
 ];
 
 export interface FacultyStudentRow {
+  rowId?: string;
   id: string;
+  courseId?: string;
   name: string;
   studentId: string;
   course: string;
@@ -333,7 +335,7 @@ export interface FacultyMessageConversation {
   id: string;
   userId?: string;
   name: string;
-  role: 'Student' | 'Admin' | 'Faculty' | 'System';
+  role: 'Student' | 'Admin' | 'Faculty' | 'System' | 'Teaching Assistant';
   roleCategory: 'Students' | 'Admin' | 'Faculty' | 'All';
   avatar: string;
   lastMessage: string;

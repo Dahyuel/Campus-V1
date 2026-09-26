@@ -90,6 +90,7 @@ def run_transcription(req: TranscribeRequest):
                         'endTime': seg['end'],
                         'source': 'lecture_recording',
                     },
+                    headers={'x-internal-secret': os.environ.get('INTERNAL_SECRET', '')},
                     timeout=10,
                 )
             except Exception:

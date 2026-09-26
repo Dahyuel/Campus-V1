@@ -2,17 +2,32 @@ import React, { useState } from 'react';
 import {
   Search,
   Send,
-  Paperclip,
   CheckCheck,
   CheckCircle2,
   Users,
   Shield,
   GraduationCap,
-  Sparkles
+  Sparkles,
+  Plus,
+  X
 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { FacultyMessageConversation } from '../../data/facultyMockData';
-import { useFacultyMessages, useFacultyMessageThread, useSendMessage } from '../../hooks/useFacultyData';
+import {
+  useFacultyMessages,
+  useFacultyMessageThread,
+  useFacultyMessageRecipients,
+  useSendMessage,
+} from '../../hooks/useFacultyData';
 import { useEffect } from 'react';
+
+interface Recipient {
+  userId: string;
+  name: string;
+  codeId: string;
+  role: string;
+  courses: string;
+}
 
 interface FacultyMessagesTabProps {
   searchQuery?: string;
@@ -21,25 +36,63 @@ interface FacultyMessagesTabProps {
 export const FacultyMessagesTab: React.FC<FacultyMessagesTabProps> = ({
   searchQuery = '',
 }) => {
+  const [searchParams] = useSearchParams();
+  const requestedUserId = searchParams.get('userId');
   const { data: conversationsData, isLoading } = useFacultyMessages();
   const conversations: FacultyMessageConversation[] = conversationsData ?? [];
   const [activeFilter, setActiveFilter] = useState<'All' | 'Students' | 'Faculty' | 'Admin'>('All');
-  const [selectedConvId, setSelectedConvId] = useState<string>('conv-1');
+  // Opened from a student profile: jump straight to that conversation
+  const [selectedConvId, setSelectedConvId] = useState<string | null>(requestedUserId);
   const [localSearch, setLocalSearch] = useState('');
   const [messageInput, setMessageInput] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const selectedConv = conversations.find((c) => c.id === selectedConvId);
+  // A conversation started from the picker that has no messages yet
+  const [draftRecipient, setDraftRecipient] = useState<Recipient | null>(null);
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState('');
+  const { data: recipientsData } = useFacultyMessageRecipients();
+  const recipients: Recipient[] = recipientsData ?? [];
+
+  const draftConversation: FacultyMessageConversation | null = draftRecipient
+    ? {
+        id: draftRecipient.userId,
+        userId: draftRecipient.userId,
+        name: draftRecipient.name,
+        role: draftRecipient.role === 'Student' ? 'Student' : 'Teaching Assistant',
+        roleCategory: draftRecipient.role === 'Student' ? 'Students' : 'Faculty',
+        avatar: '',
+        lastMessage: 'No messages yet',
+        time: '',
+        unreadCount: 0,
+        online: true,
+      }
+    : null;
+
+  const allConversations =
+    draftConversation && !conversations.some((c) => c.userId === draftConversation.userId)
+      ? [draftConversation, ...conversations]
+      : conversations;
+
+  const selectedConv =
+    allConversations.find((c) => c.id === selectedConvId) ?? allConversations[0] ?? null;
   const { data: threadData } = useFacultyMessageThread(selectedConv?.userId ?? null);
   const sendMessage = useSendMessage();
 
   const [chatThreads, setChatThreads] = useState<Record<string, Array<{ id: string; sender: 'me' | 'them'; text: string; time: string }>>>({});
 
+  // Arrived with a userId that has no thread yet: open it as a draft
   useEffect(() => {
-    if (threadData && selectedConvId) {
-      setChatThreads((prev) => ({ ...prev, [selectedConvId]: threadData }));
+    if (!requestedUserId || conversations.some((c) => c.userId === requestedUserId)) return;
+    const person = recipients.find((p) => p.userId === requestedUserId);
+    if (person) setDraftRecipient(person);
+  }, [requestedUserId, conversations, recipients]);
+
+  useEffect(() => {
+    if (threadData && selectedConv) {
+      setChatThreads((prev) => ({ ...prev, [selectedConv.id]: threadData }));
     }
-  }, [threadData, selectedConvId]);
+  }, [threadData, selectedConv?.id]);
 
   if (isLoading) {
     return (
@@ -54,10 +107,17 @@ export const FacultyMessagesTab: React.FC<FacultyMessagesTabProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const activeConv = conversations.find((c) => c.id === selectedConvId) || conversations[0];
+  const activeConv = selectedConv;
 
   const handleSelectConv = (id: string) => {
     setSelectedConvId(id);
+  };
+
+  const startConversation = (person: Recipient) => {
+    setDraftRecipient(person);
+    setSelectedConvId(person.userId);
+    setIsPickerOpen(false);
+    setPickerSearch('');
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -85,13 +145,19 @@ export const FacultyMessagesTab: React.FC<FacultyMessagesTabProps> = ({
     }
   };
 
-  const handleAttachFile = () => {
-    showToast('Document attachment dialogue opened');
-  };
-
   const effectiveSearch = (localSearch || searchQuery).trim().toLowerCase();
 
-  const filteredConversations = conversations.filter((c) => {
+  const pickerQuery = pickerSearch.trim().toLowerCase();
+  const filteredRecipients = recipients.filter((p) => {
+    if (!pickerQuery) return true;
+    return (
+      p.name.toLowerCase().includes(pickerQuery) ||
+      p.codeId.toLowerCase().includes(pickerQuery) ||
+      p.courses.toLowerCase().includes(pickerQuery)
+    );
+  });
+
+  const filteredConversations = allConversations.filter((c) => {
     if (activeFilter !== 'All') {
       if (activeFilter === 'Students' && c.role !== 'Student') return false;
       if (activeFilter === 'Faculty' && c.role !== 'Faculty') return false;
@@ -127,6 +193,15 @@ export const FacultyMessagesTab: React.FC<FacultyMessagesTabProps> = ({
         <div className="md:col-span-5 border-r border-slate-100 flex flex-col bg-slate-50/30">
           {/* Search Bar at the top */}
           <div className="p-4 border-b border-slate-100 bg-white">
+            <button
+              type="button"
+              id="btn-new-message"
+              onClick={() => setIsPickerOpen(true)}
+              className="w-full mb-3 py-2 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>New Message</span>
+            </button>
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
@@ -222,6 +297,16 @@ export const FacultyMessagesTab: React.FC<FacultyMessagesTabProps> = ({
         {/* Right Panel — Active Conversation (col-span-7 / 12)      */}
         {/* ======================================================== */}
         <div className="md:col-span-7 flex flex-col h-full bg-white">
+          {!activeConv ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
+              <Users className="w-8 h-8 text-slate-300 mb-3" />
+              <p className="text-sm font-bold text-slate-700">No conversations yet</p>
+              <p className="text-xs text-slate-500 mt-1 max-w-xs">
+                Use New Message to write to a student or teaching assistant in one of your courses.
+              </p>
+            </div>
+          ) : (
+          <>
           {/* Header with Student Context summary pills */}
           <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -286,18 +371,9 @@ export const FacultyMessagesTab: React.FC<FacultyMessagesTabProps> = ({
             onSubmit={handleSendMessage}
             className="p-4 border-t border-slate-100 bg-white flex items-center gap-2.5"
           >
-            <button
-              type="button"
-              id="btn-attach-file"
-              onClick={handleAttachFile}
-              className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-xl transition-colors cursor-pointer"
-            >
-              <Paperclip className="w-4 h-4" />
-            </button>
-
             <input
               type="text"
-              placeholder={`Reply to ${activeConv.name}...`}
+              placeholder={`Message ${activeConv.name}...`}
               value={messageInput}
               onChange={(e) => setMessageInput(e.target.value)}
               className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-hidden focus:border-[#3256a8] focus:bg-white transition-all"
@@ -312,8 +388,59 @@ export const FacultyMessagesTab: React.FC<FacultyMessagesTabProps> = ({
               <span>Send</span>
             </button>
           </form>
+          </>
+          )}
         </div>
       </div>
+
+      {/* New message recipient picker */}
+      {isPickerOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full border border-slate-100 shadow-2xl animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-slate-900 text-sm">New Message</h3>
+              <button
+                onClick={() => setIsPickerOpen(false)}
+                className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="relative mb-3">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                autoFocus
+                placeholder="Search by name, ID or course..."
+                value={pickerSearch}
+                onChange={(e) => setPickerSearch(e.target.value)}
+                className="w-full pl-9 pr-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-hidden focus:border-[#3256a8] focus:bg-white transition-all"
+              />
+            </div>
+
+            <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
+              {filteredRecipients.length === 0 && (
+                <p className="text-xs text-slate-500 text-center py-6">
+                  No one matches that search.
+                </p>
+              )}
+              {filteredRecipients.map((person) => (
+                <button
+                  key={person.userId}
+                  onClick={() => startConversation(person)}
+                  className="w-full text-left px-2 py-2.5 hover:bg-slate-50 transition-colors cursor-pointer rounded-lg"
+                >
+                  <p className="text-xs font-bold text-slate-900">{person.name}</p>
+                  <p className="text-[11px] text-slate-500">
+                    {person.role} · {person.codeId} · {person.courses}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

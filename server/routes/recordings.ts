@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { requireAuth } from '../middleware/requireAuth.js';
@@ -67,7 +68,10 @@ export default async function recordingRoutes(fastify: FastifyInstance): Promise
     }
     const courseCode = courseRows[0].code;
 
-    const fileKey = `courses/${courseCode}/recordings/${lectureLabel}_${Date.now()}.webm`;
+    // Same lowercase course folder as materials; the label is user input, so
+    // strip anything that could change the path.
+    const safeLabel = path.basename(lectureLabel).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100) || 'recording';
+    const fileKey = `courses/${courseCode.toLowerCase()}/recordings/${safeLabel}_${Date.now()}.webm`;
     await fastify.minio.send(
       new PutObjectCommand({
         Bucket: MATERIALS_BUCKET,
@@ -159,13 +163,14 @@ export default async function recordingRoutes(fastify: FastifyInstance): Promise
 
     const rows = await query<{
       id: string;
+      user_id: string;
       name: string;
       code_id: string;
       access_type: string;
       granted_at: string;
       granted_by_name: string | null;
     }>(
-      `SELECT ra.id, u.name, u.code_id, ra.access_type, ra.granted_at, gb.name AS granted_by_name
+      `SELECT ra.id, u.id AS user_id, u.name, u.code_id, ra.access_type, ra.granted_at, gb.name AS granted_by_name
        FROM recording_access ra
        JOIN lecture_recordings r ON r.id = ra.recording_id
        JOIN faculty_course_assignments fca ON fca.course_id = r.course_id AND fca.faculty_id = $2
@@ -178,6 +183,8 @@ export default async function recordingRoutes(fastify: FastifyInstance): Promise
     return reply.status(200).send(
       rows.map((r) => ({
         id: r.id,
+        // userId is what grant/revoke take; studentId is the display code
+        userId: r.user_id,
         name: r.name,
         studentId: r.code_id,
         accessType: r.access_type,

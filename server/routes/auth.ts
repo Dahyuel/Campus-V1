@@ -26,8 +26,21 @@ import {
 } from '../auth.js';
 import { redis, refreshKey } from '../redis.js';
 import { logActivity, revokeRefreshToken } from '../db/activity.js';
+import { query } from '../db/client.js';
 
 const ACCESS_TOKEN_PREFIX = 'Bearer ';
+
+const ChangePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Current password is required'),
+  newPassword: z
+    .string()
+    .min(12, 'New password must be at least 12 characters')
+    .max(128, 'New password is too long')
+    .regex(/[a-z]/, 'New password needs a lowercase letter')
+    .regex(/[A-Z]/, 'New password needs an uppercase letter')
+    .regex(/[0-9]/, 'New password needs a digit')
+    .regex(/[^A-Za-z0-9]/, 'New password needs a symbol'),
+});
 
 const DUMMY_PASSWORD_HASH = '$2b$12$C6UzMDM.H6dfI/f/IKcEeO6zZ0s0jK8fW9jVnL3qY5mR8tP2xQ4uW';
 
@@ -97,6 +110,9 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
         rateLimit: {
           max: 5,
           timeWindow: '15 minutes',
+          // The default onRequest hook runs before the body is parsed, which
+          // left the identifier empty and made every account share one bucket.
+          hook: 'preHandler',
           keyGenerator: (request) => {
             const body = request.body as { identifier?: string } | undefined;
             const identifier = (body?.identifier ?? '').toString().trim().toLowerCase();
@@ -209,6 +225,38 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
 
     return reply.status(200).send({ accessToken: tokens.accessToken });
   });
+
+  fastify.post<{ Reply: { message: string } | ErrorResponse }>(
+    '/auth/change-password',
+    {
+      preValidation: authenticateRequest,
+      config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
+    },
+    async (request, reply) => {
+      const authReq = request as AuthenticatedRequest;
+      const parsed = ChangePasswordSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? 'Bad request' });
+      }
+      const { currentPassword, newPassword } = parsed.data;
+
+      const user = await findUserById(authReq.user.id);
+      if (!user) {
+        return reply.status(401).send({ error: 'Unauthorized' });
+      }
+      if (!(await bcrypt.compare(currentPassword, user.passwordHash))) {
+        return reply.status(400).send({ error: 'Current password is incorrect' });
+      }
+      if (currentPassword === newPassword) {
+        return reply.status(400).send({ error: 'New password must be different from the current one' });
+      }
+
+      const passwordHash = await bcrypt.hash(newPassword, config.bcryptRounds);
+      await query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, user.id]);
+      void logActivity(user.id, 'password_changed');
+      return reply.status(200).send({ message: 'Password updated' });
+    }
+  );
 
   fastify.post<{ Reply: { message: string } | ErrorResponse }>(
     '/auth/logout',

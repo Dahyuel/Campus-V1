@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { getEmbedding, ensureCourseCollection } from '../lib/rag.js';
+import { getEmbedding, ensureCourseCollection, deterministicPointId } from '../lib/rag.js';
 
 const qdrant = new QdrantClient({ url: process.env.QDRANT_URL ?? 'http://localhost:6333' });
 
@@ -27,8 +27,7 @@ export default async function internalRoutes(fastify: FastifyInstance): Promise<
     }
 
     const embedding = await getEmbedding(body.text);
-    const collectionName = `course_${body.courseCode.toLowerCase().replace(/-/g, '_')}`;
-    await ensureCourseCollection(collectionName);
+    const collectionName = await ensureCourseCollection(body.courseCode);
 
     const minutes = Math.floor(body.startTime / 60);
     const seconds = String(Math.round(body.startTime % 60)).padStart(2, '0');
@@ -36,7 +35,7 @@ export default async function internalRoutes(fastify: FastifyInstance): Promise<
     await qdrant.upsert(collectionName, {
       points: [
         {
-          id: `rec_${body.recordingId}_${Math.round(body.startTime)}`,
+          id: deterministicPointId(`rec_${body.recordingId}`, Math.round(body.startTime)),
           vector: embedding,
           payload: {
             text: body.text,

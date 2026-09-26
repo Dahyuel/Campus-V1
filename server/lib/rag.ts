@@ -38,7 +38,8 @@ export async function ensureCourseCollection(courseCode: string): Promise<string
   return collectionName;
 }
 
-function deterministicPointId(materialId: string, chunkIndex: number): string {
+// Qdrant only accepts unsigned integers or UUIDs as point ids.
+export function deterministicPointId(materialId: string, chunkIndex: number): string {
   const hash = createHash('sha1').update(`${materialId}:${chunkIndex}`).digest('hex');
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
 }

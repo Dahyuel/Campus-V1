@@ -29,6 +29,7 @@ import {
   useStudentCommunityPosts,
   useCreateCommunityPost,
   useUpvotePost,
+  useCommunitySettings,
 } from '../../hooks/useStudentCommunity';
 import { useStudentCourses } from '../../hooks/useStudentData';
 import { Portal } from '../ui/Portal';
@@ -76,6 +77,9 @@ export const CommunityTab: React.FC<CommunityTabProps> = ({ searchQuery = '' }) 
   const [newTitle, setNewTitle] = useState('');
   const [newBody, setNewBody] = useState('');
   const [newCourse, setNewCourse] = useState('');
+  const newCourseCode = COURSE_PILLS.find((p) => p.label === newCourse)?.code;
+  const { data: communitySettings } = useCommunitySettings(newCourseCode);
+  const anonymousAllowed = communitySettings?.allowAnonymous ?? true;
   const [newType, setNewType] = useState<'QUESTION' | 'RESOURCE' | 'DISCUSSION'>('QUESTION');
   const [isAnonymous, setIsAnonymous] = useState(false);
 
@@ -476,19 +480,22 @@ export const CommunityTab: React.FC<CommunityTabProps> = ({ searchQuery = '' }) 
                 />
               </div>
 
-              {/* Toggle for "Post Anonymously" */}
+              {/* Toggle for "Post Anonymously" — the course's faculty can turn this off */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-100">
                 <div>
                   <span className="text-xs font-bold text-slate-800 block">Post Anonymously</span>
                   <span className="text-[11px] text-slate-400">
-                    Hide your name and student ID from public feed
+                    {anonymousAllowed
+                      ? 'Hide your name and student ID from public feed'
+                      : 'Turned off by the course instructor'}
                   </span>
                 </div>
                 <input
                   type="checkbox"
-                  checked={isAnonymous}
+                  checked={isAnonymous && anonymousAllowed}
+                  disabled={!anonymousAllowed}
                   onChange={(e) => setIsAnonymous(e.target.checked)}
-                  className="w-4 h-4 rounded text-[#3256a8] focus:ring-[#3256a8]/20"
+                  className="w-4 h-4 rounded text-[#3256a8] focus:ring-[#3256a8]/20 disabled:opacity-40"
                 />
               </div>
 

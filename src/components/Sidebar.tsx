@@ -25,7 +25,8 @@ import {
   FolderOpen,
   Sparkles,
   CheckSquare,
-  Video
+  Video,
+  LayoutGrid
 } from 'lucide-react';
 import { CAMPUS_LOGO_URL, ROLE_NAVIGATION } from '../data/mockData';
 import { TabId, RoleType, NavItemConfig } from '../types';
@@ -133,6 +134,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
         return <AlertTriangle className="w-5 h-5" />;
       case 'Building2':
         return <Building2 className="w-5 h-5" />;
+      case 'Sparkles':
+        return <Sparkles className="w-5 h-5" />;
+      case 'Video':
+        return <Video className="w-5 h-5" />;
+      case 'CheckSquare':
+        return <CheckSquare className="w-5 h-5" />;
+      case 'FolderOpen':
+        return <FolderOpen className="w-5 h-5" />;
+      case 'Layout':
+        return <LayoutGrid className="w-5 h-5" />;
       default:
         return <Home className="w-5 h-5" />;
     }

@@ -9,9 +9,12 @@ import { redis } from '../redis.js';
 import { MATERIALS_BUCKET } from '../plugins/minio.js';
 import { indexMaterial } from '../lib/rag.js';
 import { escapeHtml } from '../lib/sanitize.js';
+import { normalizePreferences } from '../lib/preferences.js';
 
 const QR_TTL_SECONDS = 600;
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+// Office hours are kept for the working week only (Sunday–Thursday locally).
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 const ALLOWED_MATERIAL_TYPES = [
@@ -22,6 +25,13 @@ const ALLOWED_MATERIAL_TYPES = [
   'Other',
 ];
 const ALLOWED_FILE_EXTENSIONS = ['.pdf', '.docx', '.pptx', '.zip', '.mp4'];
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const AVATAR_CONTENT_TYPES: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+};
 const CONTENT_TYPES: Record<string, string> = {
   '.pdf': 'application/pdf',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -38,6 +48,17 @@ function formatDateLabel(value: string | Date): string {
   const d = typeof value === 'string' ? new Date(value) : value;
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
+
+// Schedule slots are stored as display text ("10:00 AM"); returns minutes since midnight.
+function slotMinutes(slot: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(slot.trim());
+  if (!m) return null;
+  const hours = (Number(m[1]) % 12) + (m[3].toUpperCase() === 'PM' ? 12 : 0);
+  return hours * 60 + Number(m[2]);
+}
+
+// No slot duration is stored; assume a standard lecture block for live status.
+const LECTURE_MINUTES = 90;
 
 function timeAgo(value: string | Date): string {
   const d = typeof value === 'string' ? new Date(value) : value;
@@ -107,6 +128,7 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
     const today = DAYS[new Date().getDay()];
     const scheduleRows = await query<{
       id: string;
+      course_id: string;
       course_name: string;
       code: string;
       room: string | null;
@@ -114,7 +136,7 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
       day_of_week: string;
       students_count: string;
     }>(
-      `SELECT s.id, c.name AS course_name, c.code, s.room, s.time_slot, s.day_of_week,
+      `SELECT s.id, c.id AS course_id, c.name AS course_name, c.code, s.room, s.time_slot, s.day_of_week,
               (SELECT COUNT(*) FROM enrollments e WHERE e.course_id = c.id) AS students_count
        FROM schedule_slots s
        JOIN courses c ON c.id = s.course_id
@@ -123,44 +145,156 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
       [courseIds.length ? courseIds : emptyIds]
     );
 
-    let schedule = scheduleRows
-      .filter((r) => r.day_of_week === today)
-      .map((r) => ({
-        id: r.id,
-        courseName: r.course_name,
-        code: r.code,
-        room: r.room ?? '',
-        time: r.time_slot,
-        studentsCount: Number(r.students_count),
-        status: 'Upcoming',
-      }));
-
-    if (schedule.length === 0) {
-      const courses = await query<{ id: string; name: string; code: string; students_count: string }>(
-        `SELECT c.id, c.name, c.code,
-                (SELECT COUNT(*) FROM enrollments e WHERE e.course_id = c.id) AS students_count
-         FROM faculty_course_assignments fca
-         JOIN courses c ON c.id = fca.course_id
-         WHERE fca.faculty_id = $1
-         ORDER BY c.code`,
-        [facultyId]
-      );
-      schedule = courses.map((c) => ({
-        id: c.id,
-        courseName: c.name,
-        code: c.code,
-        room: '',
-        time: '',
-        studentsCount: Number(c.students_count),
-        status: 'Upcoming',
-      }));
+    // Show today's classes; if there are none, show the next day that has any,
+    // so the card still carries real times and rooms.
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    let scheduleDay = today;
+    let isToday = true;
+    let daySlots = scheduleRows.filter((r) => r.day_of_week === today);
+    if (daySlots.length === 0) {
+      for (let offset = 1; offset <= 7; offset += 1) {
+        const candidate = DAYS[(now.getDay() + offset) % 7];
+        const found = scheduleRows.filter((r) => r.day_of_week === candidate);
+        if (found.length > 0) {
+          scheduleDay = candidate;
+          daySlots = found;
+          isToday = false;
+          break;
+        }
+      }
     }
 
+    const schedule = daySlots
+      .slice()
+      .sort((a, b) => (slotMinutes(a.time_slot) ?? 0) - (slotMinutes(b.time_slot) ?? 0))
+      .map((r) => {
+        const start = slotMinutes(r.time_slot);
+        let status: 'Completed' | 'In Progress' | 'Upcoming' = 'Upcoming';
+        if (isToday && start !== null) {
+          if (nowMinutes >= start + LECTURE_MINUTES) status = 'Completed';
+          else if (nowMinutes >= start) status = 'In Progress';
+        }
+        return {
+          id: r.id,
+          courseId: r.course_id,
+          courseName: r.course_name,
+          code: r.code,
+          room: r.room ?? '',
+          time: r.time_slot,
+          studentsCount: Number(r.students_count),
+          status,
+        };
+      });
+
+    const courseIdParam = [courseIds.length ? courseIds : emptyIds];
+
+    const missingGradeRows = await query<{
+      assessment_id: string;
+      title: string;
+      course_name: string;
+      code: string;
+      missing: string;
+    }>(
+      // One row per course: the assessment with the most grades still missing,
+      // so the action list covers every course instead of filling up with one.
+      `SELECT DISTINCT ON (t.course_id) t.assessment_id, t.title, t.course_name, t.code, t.missing
+       FROM (
+         SELECT a.course_id, a.id AS assessment_id, a.title, c.name AS course_name, c.code,
+                a.display_order,
+                COUNT(*) FILTER (WHERE g.id IS NULL) AS missing
+         FROM assessments a
+         JOIN courses c ON c.id = a.course_id
+         JOIN enrollments e ON e.course_id = a.course_id AND e.status IS DISTINCT FROM 'DROPPED'
+         LEFT JOIN grades g ON g.assessment_id = a.id AND g.student_id = e.student_id
+         WHERE a.course_id = ANY($1::uuid[])
+         GROUP BY a.course_id, a.id, a.title, c.name, c.code, a.display_order
+         HAVING COUNT(*) FILTER (WHERE g.id IS NULL) > 0
+       ) t
+       ORDER BY t.course_id, t.missing DESC, t.display_order`,
+      courseIdParam
+    );
+
+    const taPendingRows = await query<{ id: string; ta_name: string | null; title: string; course_name: string; section_label: string }>(
+      `SELECT tgs.id, u.name AS ta_name, a.title, c.name AS course_name, tgs.section_label
+       FROM ta_grade_submissions tgs
+       JOIN assessments a ON a.id = tgs.assessment_id
+       JOIN courses c ON c.id = tgs.course_id
+       LEFT JOIN users u ON u.id = tgs.ta_id
+       WHERE tgs.course_id = ANY($1::uuid[]) AND tgs.status = 'PENDING'
+       ORDER BY tgs.submitted_at`,
+      courseIdParam
+    );
+
+    const aiPendingRows = await query<{ code: string; pending: string }>(
+      `SELECT c.code, COUNT(*) AS pending
+       FROM community_posts cp
+       JOIN courses c ON c.id = cp.course_id
+       WHERE cp.course_id = ANY($1::uuid[])
+         AND cp.ai_status = 'awaiting_approval' AND cp.is_flagged = false
+       GROUP BY c.code
+       ORDER BY COUNT(*) DESC`,
+      courseIdParam
+    );
+
     const pendingActions = [
-      { id: 'act-f1', priority: 'high', color: 'bg-rose-500', text: 'Enter midterm grades for Data Structures — due in 3 days', actionText: 'Do Now' },
-      { id: 'act-f2', priority: 'medium', color: 'bg-amber-500', text: 'Publish Lecture 12 slides for Networks', actionText: 'Do Now' },
-      { id: 'act-f3', priority: 'low', color: 'bg-blue-500', text: 'Review 5 pending AI answers in CS-301 community', actionText: 'Do Now' },
+      ...missingGradeRows
+        .slice()
+        .sort((a, b) => Number(b.missing) - Number(a.missing) || a.code.localeCompare(b.code))
+        .slice(0, 4)
+        .map((r) => ({
+        id: `grades-${r.assessment_id}`,
+        priority: 'high',
+        color: 'bg-rose-500',
+        text: `Enter ${r.title} grades for ${r.course_name} — ${r.missing} student${Number(r.missing) === 1 ? '' : 's'} pending`,
+        actionText: 'Do Now',
+        targetTab: 'grade-entry',
+      })),
+      ...taPendingRows.map((r) => ({
+        id: `ta-${r.id}`,
+        priority: 'medium',
+        color: 'bg-amber-500',
+        text: `Review ${r.ta_name ?? 'TA'}'s submitted ${r.title} grades for ${r.course_name} ${r.section_label}`,
+        actionText: 'Review',
+        targetTab: 'grade-entry',
+      })),
+      ...aiPendingRows.map((r) => ({
+        id: `ai-${r.code}`,
+        priority: 'low',
+        color: 'bg-blue-500',
+        text: `Review ${r.pending} pending AI answer${Number(r.pending) === 1 ? '' : 's'} in ${r.code} community`,
+        actionText: 'Review',
+        targetTab: 'course-community',
+      })),
     ];
+
+    const statRows = await query<{
+      total_students: string;
+      active_courses: string;
+      pending_grades: string;
+      avg_attendance: string | null;
+    }>(
+      `SELECT
+         (SELECT COUNT(DISTINCT e.student_id) FROM enrollments e
+           WHERE e.course_id = ANY($1::uuid[]) AND e.status IS DISTINCT FROM 'DROPPED') AS total_students,
+         (SELECT COUNT(*) FROM faculty_course_assignments WHERE faculty_id = $2) AS active_courses,
+         (SELECT COUNT(*) FROM assessments a
+            JOIN enrollments e ON e.course_id = a.course_id AND e.status IS DISTINCT FROM 'DROPPED'
+            LEFT JOIN grades g ON g.assessment_id = a.id AND g.student_id = e.student_id
+           WHERE a.course_id = ANY($1::uuid[]) AND g.id IS NULL) AS pending_grades,
+         (SELECT AVG(e.attendance_pct) FROM enrollments e
+           WHERE e.course_id = ANY($1::uuid[]) AND e.status IS DISTINCT FROM 'DROPPED') AS avg_attendance`,
+      [courseIds.length ? courseIds : emptyIds, facultyId]
+    );
+    const stats = {
+      activeCourses: Number(statRows[0]?.active_courses ?? 0),
+      totalStudents: Number(statRows[0]?.total_students ?? 0),
+      pendingGrades: Number(statRows[0]?.pending_grades ?? 0),
+      avgAttendance:
+        statRows[0]?.avg_attendance === null || statRows[0]?.avg_attendance === undefined
+          ? null
+          : Math.round(Number(statRows[0].avg_attendance)),
+    };
 
     const atRiskRows = await query<{
       id: string;
@@ -199,6 +333,9 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
 
     return reply.status(200).send({
       schedule,
+      scheduleDay,
+      scheduleIsToday: isToday,
+      stats,
       pendingActions,
       atRiskStudents: atRiskRows.map((r) => ({
         id: r.id,
@@ -265,16 +402,206 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
     );
   });
 
+  fastify.get('/profile', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const rows = await query<{
+      name: string; email: string; phone: string | null; academic_rank: string | null;
+      code_id: string; avatar_url: string | null; preferences: unknown;
+    }>(
+      `SELECT name, email, phone, academic_rank, code_id, avatar_url, preferences FROM users WHERE id = $1 LIMIT 1`,
+      [facultyId]
+    );
+    if (!rows[0]) return reply.status(404).send({ error: 'Profile not found' });
+
+    const hours = await query<{
+      day_of_week: string; start_time: string | null; end_time: string | null;
+      location: string | null; is_closed: boolean;
+    }>(
+      `SELECT day_of_week, start_time, end_time, location, is_closed
+       FROM office_hours WHERE user_id = $1`,
+      [facultyId]
+    );
+    const byDay = new Map(hours.map((h) => [h.day_of_week, h]));
+
+    // Department isn't stored on the user; take the one most of their courses belong to.
+    const academic = await query<{
+      department: string | null; course_count: string; credit_hours: string | null; student_count: string;
+    }>(
+      `SELECT
+         (SELECT d.name FROM faculty_course_assignments fca
+            JOIN courses c ON c.id = fca.course_id
+            JOIN departments d ON d.id = c.department_id
+           WHERE fca.faculty_id = $1
+           GROUP BY d.name ORDER BY COUNT(*) DESC, d.name LIMIT 1) AS department,
+         (SELECT COUNT(DISTINCT fca.course_id) FROM faculty_course_assignments fca
+           WHERE fca.faculty_id = $1) AS course_count,
+         (SELECT SUM(c.credits) FROM courses c
+           WHERE c.id IN (SELECT course_id FROM faculty_course_assignments WHERE faculty_id = $1)) AS credit_hours,
+         (SELECT COUNT(DISTINCT e.student_id) FROM enrollments e
+           WHERE e.course_id IN (SELECT course_id FROM faculty_course_assignments WHERE faculty_id = $1)) AS student_count`,
+      [facultyId]
+    );
+
+    return reply.status(200).send({
+      name: rows[0].name,
+      email: rows[0].email,
+      phone: rows[0].phone ?? '',
+      rank: rows[0].academic_rank ?? '',
+      codeId: rows[0].code_id,
+      avatarUrl: rows[0].avatar_url,
+      department: academic[0]?.department ?? null,
+      courseCount: Number(academic[0]?.course_count ?? 0),
+      creditHours: Number(academic[0]?.credit_hours ?? 0),
+      studentCount: Number(academic[0]?.student_count ?? 0),
+      preferences: normalizePreferences(rows[0].preferences),
+      officeHours: WEEKDAYS.map((day) => {
+        const row = byDay.get(day);
+        return {
+          day,
+          start: row?.start_time ?? '',
+          end: row?.end_time ?? '',
+          location: row?.location ?? '',
+          isClosed: row?.is_closed ?? true,
+        };
+      }),
+    });
+  });
+
+  fastify.patch('/profile', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const body = (request.body ?? {}) as {
+      name?: string;
+      email?: string;
+      phone?: string;
+      rank?: string;
+      officeHours?: Array<{ day: string; start?: string; end?: string; location?: string; isClosed?: boolean }>;
+    };
+
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const email = typeof body.email === 'string' ? body.email.trim() : '';
+    if (!name) return reply.status(400).send({ error: 'Name is required' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return reply.status(400).send({ error: 'Enter a valid email address' });
+    }
+
+    const taken = await query<{ id: string }>(
+      `SELECT id FROM users WHERE lower(email) = lower($1) AND id <> $2 LIMIT 1`,
+      [email, facultyId]
+    );
+    if (taken[0]) return reply.status(409).send({ error: 'That email is already in use' });
+
+    await query(
+      `UPDATE users SET name = $1, email = $2, phone = $3, academic_rank = $4, updated_at = NOW()
+       WHERE id = $5`,
+      [
+        name.slice(0, 255),
+        email.slice(0, 255),
+        (body.phone ?? '').trim().slice(0, 50) || null,
+        (body.rank ?? '').trim().slice(0, 100) || null,
+        facultyId,
+      ]
+    );
+
+    if (Array.isArray(body.officeHours)) {
+      for (const slot of body.officeHours) {
+        if (!WEEKDAYS.includes(slot.day)) continue;
+        await query(
+          `INSERT INTO office_hours (user_id, day_of_week, start_time, end_time, location, is_closed)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (user_id, day_of_week)
+           DO UPDATE SET start_time = EXCLUDED.start_time, end_time = EXCLUDED.end_time,
+                         location = EXCLUDED.location, is_closed = EXCLUDED.is_closed`,
+          [
+            facultyId,
+            slot.day,
+            (slot.start ?? '').trim().slice(0, 20) || null,
+            (slot.end ?? '').trim().slice(0, 20) || null,
+            (slot.location ?? '').trim().slice(0, 255) || null,
+            slot.isClosed === true,
+          ]
+        );
+      }
+    }
+
+    return reply.status(200).send({ message: 'Profile saved' });
+  });
+
+  fastify.patch('/preferences', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const prefs = normalizePreferences(request.body);
+    if (prefs.defaultCourseId && !(await assertCourseOwned(facultyId, prefs.defaultCourseId))) {
+      return reply.status(400).send({ error: 'That course is not assigned to you' });
+    }
+    await query(`UPDATE users SET preferences = $1::jsonb, updated_at = NOW() WHERE id = $2`, [
+      JSON.stringify(prefs),
+      facultyId,
+    ]);
+    return reply.status(200).send(prefs);
+  });
+
+  fastify.post('/profile/avatar', async (request, reply) => {
+    const userId = request.user!.id;
+    const file = await request.file();
+    if (!file) return reply.status(400).send({ error: 'Choose an image to upload' });
+
+    const ext = path.extname(file.filename).toLowerCase();
+    const contentType = AVATAR_CONTENT_TYPES[ext];
+    if (!contentType) {
+      return reply.status(400).send({ error: 'Use a JPG, PNG or WebP image' });
+    }
+    const buffer = await file.toBuffer();
+    if (buffer.length > AVATAR_MAX_BYTES) {
+      return reply.status(400).send({ error: 'Image must be 2 MB or smaller' });
+    }
+
+    const key = `avatars/${userId}/${Date.now()}${ext}`;
+    try {
+      await fastify.minio.send(
+        new PutObjectCommand({ Bucket: MATERIALS_BUCKET, Key: key, Body: buffer, ContentType: contentType })
+      );
+    } catch (err) {
+      fastify.log.error({ err }, 'avatar upload to storage failed');
+      return reply.status(503).send({ error: 'File storage is unavailable. Please try again later.' });
+    }
+
+    const previous = await query<{ avatar_key: string | null }>(
+      `SELECT avatar_key FROM users WHERE id = $1`,
+      [userId]
+    );
+    // Browser-facing path through the frontend's /api proxy; the version
+    // query busts cached copies of the previous photo.
+    const avatarUrl = `/api/avatars/${userId}?v=${Date.now()}`;
+    await query(`UPDATE users SET avatar_key = $1, avatar_url = $2, updated_at = NOW() WHERE id = $3`, [
+      key,
+      avatarUrl,
+      userId,
+    ]);
+
+    const oldKey = previous[0]?.avatar_key;
+    if (oldKey && oldKey !== key) {
+      fastify.minio
+        .send(new DeleteObjectCommand({ Bucket: MATERIALS_BUCKET, Key: oldKey }))
+        .catch((err) => fastify.log.warn({ err }, 'could not delete previous avatar'));
+    }
+
+    return reply.status(200).send({ avatarUrl });
+  });
+
   fastify.get('/assessments', async (request, reply) => {
     const facultyId = request.user!.id;
     const { courseId } = request.query as { courseId?: string };
     if (!courseId || !(await assertCourseOwned(facultyId, courseId))) {
       return reply.status(403).send({ error: 'Forbidden' });
     }
-    const rows = await query<{ id: string; title: string; type: string; weight_pct: string; out_of: number | null }>(
-      `SELECT id, title, type, weight_pct, out_of FROM assessments
-       WHERE course_id = $1
-       ORDER BY display_order, title`,
+    const rows = await query<{
+      id: string; title: string; type: string; weight_pct: string; out_of: number | null; due_date: string | null;
+      released: boolean;
+    }>(
+      `SELECT a.id, a.title, a.type, a.weight_pct, a.out_of, to_char(a.due_date, 'YYYY-MM-DD') AS due_date,
+              EXISTS (SELECT 1 FROM grades g WHERE g.assessment_id = a.id AND g.status = 'RELEASED') AS released
+       FROM assessments a
+       WHERE a.course_id = $1
+       ORDER BY a.display_order, a.title`,
       [courseId]
     );
     return reply.status(200).send(
@@ -284,8 +611,28 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
         type: r.type,
         weight: r.weight_pct,
         outOf: r.out_of ?? 100,
+        dueDate: r.due_date,
+        released: r.released,
       }))
     );
+  });
+
+  fastify.patch('/assessments/:assessmentId/due-date', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { assessmentId } = request.params as { assessmentId: string };
+    const { dueDate } = (request.body ?? {}) as { dueDate?: string | null };
+    if (dueDate !== null && !(typeof dueDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dueDate) && !Number.isNaN(Date.parse(dueDate)))) {
+      return reply.status(400).send({ error: 'Enter a valid date' });
+    }
+    const updated = await query<{ id: string }>(
+      `UPDATE assessments a SET due_date = $1
+       FROM faculty_course_assignments fca
+       WHERE a.id = $2 AND fca.course_id = a.course_id AND fca.faculty_id = $3
+       RETURNING a.id`,
+      [dueDate, assessmentId, facultyId]
+    );
+    if (!updated[0]) return reply.status(404).send({ error: 'Assessment not found' });
+    return reply.status(200).send({ id: assessmentId, dueDate });
   });
 
   fastify.get('/materials', async (request, reply) => {
@@ -460,8 +807,10 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
       course_name: string;
       attendance_pct: number;
       course_id: string;
+      enrollment_id: string;
     }>(
-      `SELECT u.id, u.name, u.code_id, c.name AS course_name, e.attendance_pct, c.id AS course_id
+      `SELECT u.id, u.name, u.code_id, c.name AS course_name, e.attendance_pct, c.id AS course_id,
+              e.id AS enrollment_id
        FROM enrollments e
        JOIN users u ON u.id = e.student_id
        JOIN courses c ON c.id = e.course_id
@@ -509,7 +858,11 @@ export default async function facultyRoutes(fastify: FastifyInstance): Promise<v
         else status = 'GOOD STANDING';
         const gpa = gpaMap.get(s.id) ?? null;
         return {
+          // One row per enrollment: the same student appears once per course,
+          // so rows need their own id, distinct from the student's.
+          rowId: s.enrollment_id,
           id: s.id,
+          courseId: s.course_id,
           name: s.name,
           studentId: s.code_id,
           course: s.course_name,
@@ -621,6 +974,107 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
       qrToken,
       expiresAt: expiresAt.toISOString(),
       lectureLabel,
+    });
+  });
+
+  // Who has checked in so far, polled by the QR panel while a session is open.
+  // Full roster for one session: every enrolled student with their recorded
+  // status. Older sessions may only have totals and no per-student records.
+  fastify.get('/attendance/session/:sessionId/roster', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { sessionId } = request.params as { sessionId: string };
+    const sessionRows = await query<{
+      course_id: string; lecture_label: string; session_date: string;
+      present_count: number; absent_count: number; is_open: boolean;
+    }>(
+      `SELECT s.course_id, s.lecture_label, s.session_date::text AS session_date,
+              s.present_count, s.absent_count, s.is_open
+       FROM attendance_sessions s
+       JOIN faculty_course_assignments fca ON fca.course_id = s.course_id AND fca.faculty_id = $2
+       WHERE s.id = $1 LIMIT 1`,
+      [sessionId, facultyId]
+    );
+    const session = sessionRows[0];
+    if (!session) return reply.status(404).send({ error: 'Session not found' });
+
+    const rows = await query<{
+      id: string; name: string; code_id: string;
+      status: string | null; method: string | null; marked_at: string | null;
+    }>(
+      `SELECT u.id, u.name, u.code_id, ar.status, ar.method, ar.marked_at
+       FROM enrollments e
+       JOIN users u ON u.id = e.student_id
+       LEFT JOIN attendance_records ar ON ar.session_id = $1 AND ar.student_id = e.student_id
+       WHERE e.course_id = $2 AND e.status IS DISTINCT FROM 'DROPPED'
+       ORDER BY u.name`,
+      [sessionId, session.course_id]
+    );
+
+    return reply.status(200).send({
+      lectureLabel: session.lecture_label,
+      date: formatDateLabel(session.session_date),
+      isOpen: session.is_open,
+      presentCount: session.present_count,
+      absentCount: session.absent_count,
+      hasRecords: rows.some((r) => r.status !== null),
+      students: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        studentId: r.code_id,
+        status: r.status ?? 'NOT RECORDED',
+        method: r.status === 'PRESENT' ? r.method ?? 'QR' : null,
+        markedAt: r.marked_at ? new Date(r.marked_at).toISOString() : null,
+      })),
+    });
+  });
+
+  fastify.get('/attendance/session/:sessionId/live', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { sessionId } = request.params as { sessionId: string };
+    const sessionRows = await query<{ course_id: string; is_open: boolean; qr_expires_at: string | null }>(
+      `SELECT s.course_id, s.is_open, s.qr_expires_at
+       FROM attendance_sessions s
+       JOIN faculty_course_assignments fca ON fca.course_id = s.course_id AND fca.faculty_id = $2
+       WHERE s.id = $1 LIMIT 1`,
+      [sessionId, facultyId]
+    );
+    const session = sessionRows[0];
+    if (!session) return reply.status(404).send({ error: 'Session not found' });
+
+    const rows = await query<{
+      id: string;
+      name: string;
+      code_id: string;
+      marked_at: string;
+      method: string | null;
+      status: string;
+    }>(
+      `SELECT u.id, u.name, u.code_id, ar.marked_at, ar.method, ar.status
+       FROM attendance_records ar
+       JOIN users u ON u.id = ar.student_id
+       WHERE ar.session_id = $1 AND ar.status = 'PRESENT'
+       ORDER BY ar.marked_at DESC`,
+      [sessionId]
+    );
+
+    const totals = await query<{ total: string }>(
+      `SELECT COUNT(*)::text AS total FROM enrollments
+       WHERE course_id = $1 AND status IS DISTINCT FROM 'DROPPED'`,
+      [session.course_id]
+    );
+
+    return reply.status(200).send({
+      isOpen: session.is_open,
+      expiresAt: session.qr_expires_at,
+      totalStudents: Number(totals[0]?.total ?? 0),
+      presentCount: rows.length,
+      present: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        studentId: r.code_id,
+        method: r.method ?? 'QR',
+        markedAt: new Date(r.marked_at).toISOString(),
+      })),
     });
   });
 
@@ -917,6 +1371,75 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
     return reply.status(200).send({ released: updated.length });
   });
 
+  // Review a TA's submitted grades. The TA's page unlocks again on REJECTED,
+  // so both outcomes put the grades back to ENTERED for the gradebook.
+  async function reviewTaSubmission(
+    facultyId: string,
+    facultyName: string,
+    submissionId: string,
+    decision: 'APPROVED' | 'REJECTED',
+    note: string | null
+  ): Promise<{ ok: boolean; status?: number; error?: string }> {
+    const rows = await query<{ ta_id: string | null; assessment_id: string; title: string; section_label: string; code: string }>(
+      `SELECT tgs.ta_id, tgs.assessment_id, a.title, tgs.section_label, c.code
+       FROM ta_grade_submissions tgs
+       JOIN assessments a ON a.id = tgs.assessment_id
+       JOIN courses c ON c.id = tgs.course_id
+       JOIN faculty_course_assignments fca ON fca.course_id = tgs.course_id AND fca.faculty_id = $2
+       WHERE tgs.id = $1 AND tgs.status = 'PENDING'
+       LIMIT 1`,
+      [submissionId, facultyId]
+    );
+    const submission = rows[0];
+    if (!submission) return { ok: false, status: 404, error: 'Pending submission not found' };
+
+    await query(
+      `UPDATE ta_grade_submissions
+       SET status = $1, reviewed_at = NOW(), reviewed_by = $2, professor_note = $3
+       WHERE id = $4`,
+      [decision, facultyId, note, submissionId]
+    );
+    await query(
+      `UPDATE grades SET status = 'ENTERED' WHERE assessment_id = $1 AND status = 'SUBMITTED'`,
+      [submission.assessment_id]
+    );
+
+    if (submission.ta_id) {
+      const title = decision === 'APPROVED' ? 'Grade Submission Approved' : 'Grade Submission Returned';
+      const body =
+        decision === 'APPROVED'
+          ? `${facultyName} approved your submitted grades for ${submission.title} — ${submission.section_label} in ${submission.code}.`
+          : `${facultyName} returned your grades for ${submission.title} — ${submission.section_label} in ${submission.code}.${note ? ` Note: ${note}` : ''}`;
+      await query(
+        `INSERT INTO notifications (user_id, title, body, type) VALUES ($1, $2, $3, 'grade')`,
+        [submission.ta_id, title, body]
+      );
+    }
+    return { ok: true };
+  }
+
+  fastify.post('/grades/submissions/:submissionId/approve', async (request, reply) => {
+    const { submissionId } = request.params as { submissionId: string };
+    const result = await reviewTaSubmission(request.user!.id, request.user!.name, submissionId, 'APPROVED', null);
+    if (!result.ok) return reply.status(result.status ?? 400).send({ error: result.error });
+    return reply.status(200).send({ id: submissionId, status: 'APPROVED' });
+  });
+
+  fastify.post('/grades/submissions/:submissionId/reject', async (request, reply) => {
+    const { submissionId } = request.params as { submissionId: string };
+    const { note } = (request.body ?? {}) as { note?: string };
+    const trimmed = typeof note === 'string' ? note.trim().slice(0, 1000) : '';
+    const result = await reviewTaSubmission(
+      request.user!.id,
+      request.user!.name,
+      submissionId,
+      'REJECTED',
+      trimmed || null
+    );
+    if (!result.ok) return reply.status(result.status ?? 400).send({ error: result.error });
+    return reply.status(200).send({ id: submissionId, status: 'REJECTED' });
+  });
+
   fastify.get('/messages', async (request, reply) => {
     const facultyId = request.user!.id;
     const rows = await query<{
@@ -927,8 +1450,11 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
       sent_at: string;
       read_at: string | null;
       sender_id: string;
+      unread: string;
     }>(
-      `SELECT DISTINCT ON (other_id) other_id, other_name, other_role, body, sent_at, read_at, sender_id
+      `SELECT DISTINCT ON (other_id) other_id, other_name, other_role, body, sent_at, read_at, sender_id,
+              (SELECT COUNT(*) FROM messages um
+                WHERE um.recipient_id = $1 AND um.sender_id = t.other_id AND um.read_at IS NULL) AS unread
        FROM (
          SELECT CASE WHEN sender_id = $1 THEN recipient_id ELSE sender_id END AS other_id,
                 u.name AS other_name, u.role_type AS other_role,
@@ -946,22 +1472,98 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
     };
 
     return reply.status(200).send(
-      rows.map((r, idx) => {
+      rows.map((r) => {
         const roleLabel = ROLE_LABELS[r.other_role] ?? r.other_role;
         return {
-          id: `conv-${idx + 1}`,
+          // Keyed by the other person so the id survives new conversations
+          id: r.other_id,
           userId: r.other_id,
-          name: escapeHtml(r.other_name),
-          role: escapeHtml(roleLabel),
+          name: r.other_name,
+          role: roleLabel,
           roleCategory: roleLabel === 'Student' ? 'Students' : roleLabel === 'Admin' ? 'Admin' : 'Faculty',
           avatarUrl: null,
           avatar: '',
-          lastMessage: escapeHtml(r.body),
+          lastMessage: r.body,
           time: formatDateLabel(r.sent_at),
-          unreadCount: r.read_at === null && r.sender_id !== facultyId ? 1 : 0,
+          unreadCount: Number(r.unread),
           online: true,
         };
       })
+    );
+  });
+
+  // Send the same message to several students at once (My Students cohort).
+  fastify.post('/messages/broadcast', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { studentIds, body } = (request.body ?? {}) as { studentIds?: string[]; body?: string };
+    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+      return reply.status(400).send({ error: 'Select at least one student' });
+    }
+    if (typeof body !== 'string' || body.trim() === '') {
+      return reply.status(400).send({ error: 'Message body is required' });
+    }
+    if (studentIds.length > 200) {
+      return reply.status(400).send({ error: 'Too many recipients in one message' });
+    }
+
+    // Keep only students actually enrolled in this professor's courses
+    const allowed = await query<{ student_id: string }>(
+      `SELECT DISTINCT e.student_id
+       FROM enrollments e
+       WHERE e.student_id = ANY($1::uuid[])
+         AND e.course_id IN (SELECT course_id FROM faculty_course_assignments WHERE faculty_id = $2)
+         AND e.status IS DISTINCT FROM 'DROPPED'`,
+      [studentIds, facultyId]
+    );
+    if (allowed.length === 0) {
+      return reply.status(403).send({ error: 'None of those students are in your courses' });
+    }
+
+    const text = body.trim();
+    for (const row of allowed) {
+      await query(`INSERT INTO messages (sender_id, recipient_id, body) VALUES ($1, $2, $3)`, [
+        facultyId,
+        row.student_id,
+        text,
+      ]);
+    }
+    return reply.status(200).send({ sent: allowed.length, skipped: studentIds.length - allowed.length });
+  });
+
+  // People this professor may message: students in their courses and their TAs.
+  fastify.get('/message-recipients', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const rows = await query<{ id: string; name: string; code_id: string; role_type: string; courses: string }>(
+      `SELECT u.id, u.name, u.code_id, u.role_type, string_agg(DISTINCT c.code, ', ' ORDER BY c.code) AS courses
+       FROM (
+         SELECT e.student_id AS user_id, e.course_id
+         FROM enrollments e
+         WHERE e.course_id IN (SELECT course_id FROM faculty_course_assignments WHERE faculty_id = $1)
+           AND e.status IS DISTINCT FROM 'DROPPED'
+         UNION
+         SELECT tsa.ta_id AS user_id, tsa.course_id
+         FROM ta_section_assignments tsa
+         WHERE tsa.course_id IN (SELECT course_id FROM faculty_course_assignments WHERE faculty_id = $1)
+       ) people
+       JOIN users u ON u.id = people.user_id AND u.is_active IS DISTINCT FROM false
+       JOIN courses c ON c.id = people.course_id
+       WHERE u.id <> $1
+       GROUP BY u.id, u.name, u.code_id, u.role_type
+       ORDER BY u.name`,
+      [facultyId]
+    );
+    const ROLE_LABELS: Record<string, string> = {
+      student: 'Student',
+      'teaching-assistant': 'Teaching Assistant',
+    };
+    return reply.status(200).send(
+      rows.map((r) => ({
+        userId: r.id,
+        name: r.name,
+        codeId: r.code_id,
+        role: ROLE_LABELS[r.role_type] ?? r.role_type,
+        courses: r.courses,
+      }))
     );
   });
 
@@ -987,7 +1589,7 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
       rows.map((r) => ({
         id: r.id,
         sender: r.sender_id === facultyId ? 'me' : 'them',
-        text: escapeHtml(r.body),
+        text: r.body,
         time: formatDateLabel(r.sent_at),
       }))
     );
@@ -997,6 +1599,33 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
     const facultyId = request.user!.id;
     const { userId } = request.params as { userId: string };
     const { body } = request.body as { body: string };
+    if (typeof body !== 'string' || body.trim() === '') {
+      return reply.status(400).send({ error: 'Message body is required' });
+    }
+
+    // Allowed: someone in one of their courses, or anyone already in a thread
+    // with them (so replies to admin or department staff still work).
+    const allowed = await query<{ ok: boolean }>(
+      `SELECT true AS ok WHERE EXISTS (
+         SELECT 1 FROM enrollments e
+          WHERE e.student_id = $2
+            AND e.course_id IN (SELECT course_id FROM faculty_course_assignments WHERE faculty_id = $1)
+            AND e.status IS DISTINCT FROM 'DROPPED'
+       ) OR EXISTS (
+         SELECT 1 FROM ta_section_assignments tsa
+          WHERE tsa.ta_id = $2
+            AND tsa.course_id IN (SELECT course_id FROM faculty_course_assignments WHERE faculty_id = $1)
+       ) OR EXISTS (
+         SELECT 1 FROM messages m
+          WHERE (m.sender_id = $1 AND m.recipient_id = $2)
+             OR (m.sender_id = $2 AND m.recipient_id = $1)
+       )`,
+      [facultyId, userId]
+    );
+    if (!allowed[0]) {
+      return reply.status(403).send({ error: 'You cannot message this person' });
+    }
+
     const inserted = await query<{ id: string; sent_at: string }>(
       `INSERT INTO messages (sender_id, recipient_id, body) VALUES ($1, $2, $3) RETURNING id, sent_at`,
       [facultyId, userId, body]
@@ -1004,7 +1633,7 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
     return reply.status(200).send({
       id: inserted[0].id,
       sender: 'me',
-      text: escapeHtml(body),
+      text: body,
       time: formatDateLabel(inserted[0].sent_at),
     });
   });
@@ -1041,18 +1670,18 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
       rows.map((r) => ({
         id: r.id,
         type: r.post_type,
-        title: escapeHtml(r.title),
-        author: escapeHtml(r.author_name ?? 'Anonymous'),
+        title: r.title,
+        author: r.author_name ?? 'Anonymous',
         authorRole: 'Student',
         avatarUrl: null,
         avatar: '',
         timeAgo: timeAgo(r.created_at),
-        content: escapeHtml(r.content),
+        content: r.content,
         upvotes: r.upvotes,
         isPinned: r.is_pinned,
         hasAiResponse: r.ai_answer !== null,
         aiResponse: r.ai_answer
-          ? { answer: escapeHtml(r.ai_answer), citation: escapeHtml(r.ai_citation ?? ''), status: r.ai_status ?? 'awaiting_approval' }
+          ? { answer: r.ai_answer, citation: r.ai_citation ?? '', status: r.ai_status ?? 'awaiting_approval' }
           : undefined,
       }))
     );
@@ -1077,6 +1706,93 @@ const { courseId, lectureLabel, latitude, longitude, radiusMeters } = request.bo
     }
     await query(`UPDATE community_posts SET ai_status = 'approved' WHERE id = $1`, [postId]);
     return reply.status(200).send({ id: postId, aiStatus: 'approved' });
+  });
+
+  fastify.get('/community/settings', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { courseId } = request.query as { courseId?: string };
+    if (!courseId || !(await assertCourseOwned(facultyId, courseId))) {
+      return reply.status(403).send({ error: 'Forbidden' });
+    }
+    const rows = await query<{ allow_anonymous: boolean; auto_ai_response: boolean; post_notifications: boolean }>(
+      `SELECT allow_anonymous, auto_ai_response, post_notifications
+       FROM community_settings WHERE course_id = $1 LIMIT 1`,
+      [courseId]
+    );
+    return reply.status(200).send({
+      allowAnonymous: rows[0]?.allow_anonymous ?? true,
+      autoAiResponse: rows[0]?.auto_ai_response ?? true,
+      postNotifications: rows[0]?.post_notifications ?? true,
+    });
+  });
+
+  fastify.patch('/community/settings', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { courseId, allowAnonymous, autoAiResponse, postNotifications } = (request.body ?? {}) as {
+      courseId?: string;
+      allowAnonymous?: boolean;
+      autoAiResponse?: boolean;
+      postNotifications?: boolean;
+    };
+    if (!courseId || !(await assertCourseOwned(facultyId, courseId))) {
+      return reply.status(403).send({ error: 'Forbidden' });
+    }
+    const rows = await query<{ allow_anonymous: boolean; auto_ai_response: boolean; post_notifications: boolean }>(
+      `INSERT INTO community_settings (course_id, allow_anonymous, auto_ai_response, post_notifications, updated_at, updated_by)
+       VALUES ($1, COALESCE($2, true), COALESCE($3, true), COALESCE($4, true), NOW(), $5)
+       ON CONFLICT (course_id) DO UPDATE SET
+         allow_anonymous = COALESCE($2, community_settings.allow_anonymous),
+         auto_ai_response = COALESCE($3, community_settings.auto_ai_response),
+         post_notifications = COALESCE($4, community_settings.post_notifications),
+         updated_at = NOW(), updated_by = $5
+       RETURNING allow_anonymous, auto_ai_response, post_notifications`,
+      [
+        courseId,
+        typeof allowAnonymous === 'boolean' ? allowAnonymous : null,
+        typeof autoAiResponse === 'boolean' ? autoAiResponse : null,
+        typeof postNotifications === 'boolean' ? postNotifications : null,
+        facultyId,
+      ]
+    );
+    return reply.status(200).send({
+      allowAnonymous: rows[0].allow_anonymous,
+      autoAiResponse: rows[0].auto_ai_response,
+      postNotifications: rows[0].post_notifications,
+    });
+  });
+
+  fastify.get('/community/removed', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { courseId } = request.query as { courseId?: string };
+    if (!courseId || !(await assertCourseOwned(facultyId, courseId))) {
+      return reply.status(403).send({ error: 'Forbidden' });
+    }
+    const rows = await query<{ id: string; title: string; author_name: string | null; created_at: string }>(
+      `SELECT cp.id, cp.title, u.name AS author_name, cp.created_at
+       FROM community_posts cp
+       LEFT JOIN users u ON u.id = cp.author_id
+       WHERE cp.course_id = $1 AND cp.is_flagged = true
+       ORDER BY cp.created_at DESC`,
+      [courseId]
+    );
+    return reply.status(200).send(
+      rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        author: r.author_name ?? 'Anonymous',
+        timeAgo: timeAgo(r.created_at),
+      }))
+    );
+  });
+
+  fastify.patch('/community/:postId/restore', async (request, reply) => {
+    const facultyId = request.user!.id;
+    const { postId } = request.params as { postId: string };
+    if (!(await assertPostOwnedByFaculty(facultyId, postId))) {
+      return reply.status(403).send({ error: 'Post not found or not assigned to faculty' });
+    }
+    await query(`UPDATE community_posts SET is_flagged = false WHERE id = $1`, [postId]);
+    return reply.status(200).send({ id: postId, restored: true });
   });
 
   fastify.patch('/community/:postId/ai-correction', async (request, reply) => {

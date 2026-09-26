@@ -15,6 +15,7 @@ import { SmartScheduleTab } from './components/student/SmartScheduleTab';
 import { TodoTab } from './components/student/TodoTab';
 import { RecordingsTab } from './components/student/RecordingsTab';
 import { FacultySmartScheduleTab } from './components/faculty/FacultySmartScheduleTab';
+import { FacultyRecordingsTab } from './components/faculty/FacultyRecordingsTab';
 import { GradesTab } from './components/student/GradesTab';
 import { CommunityTab } from './components/student/CommunityTab';
 import { AITutorTab } from './components/student/AITutorTab';
@@ -62,6 +63,7 @@ import { TAAcademicRecordTab } from './components/ta/TAAcademicRecordTab';
 import { TAMessagesTab } from './components/ta/TAMessagesTab';
 import { TabId, RoleType, User } from './types';
 import { useAuth } from './context/AuthContext.tsx';
+import { useUnreadMessageCount } from './hooks/useNotifications';
 
 const TAB_TO_PATH: Record<TabId, string> = {
   home: '/Home',
@@ -105,12 +107,18 @@ const TAB_TO_PATH: Record<TabId, string> = {
 interface RoleViewProps {
   user: User;
   searchQuery: string;
-  onNavigateTab: (tabId: any) => void;
+  onNavigateTab: (tabId: any, params?: Record<string, string>) => void;
 }
 
-const navigateTab = (navigate: ReturnType<typeof useNavigate>) => (tab: TabId) => {
-  navigate(TAB_TO_PATH[tab] ?? '/Home');
-};
+// Optional params become a query string, so a tab can open on the course or
+// person the professor clicked (e.g. Grade Entry for Networks).
+const navigateTab =
+  (navigate: ReturnType<typeof useNavigate>) =>
+  (tab: TabId, params?: Record<string, string>) => {
+    const path = TAB_TO_PATH[tab] ?? '/Home';
+    const query = params ? new URLSearchParams(params).toString() : '';
+    navigate(query ? `${path}?${query}` : path);
+  };
 
 const HomeForRole: React.FC<RoleViewProps> = ({ user, searchQuery, onNavigateTab }) => {
   const currentRole: RoleType = user.roleType ?? 'student';
@@ -181,6 +189,9 @@ const RecordingsForRole: React.FC<RoleViewProps> = ({ user, onNavigateTab }) => 
   if (user.roleType === 'student') {
     return <RecordingsTab user={user} />;
   }
+  if (user.roleType === 'faculty') {
+    return <FacultyRecordingsTab />;
+  }
   return <EmptyTab tabId="recordings" onBackToHome={() => onNavigateTab('home')} />;
 };
 
@@ -207,7 +218,7 @@ const AITutorForRole: React.FC<RoleViewProps> = ({ user, searchQuery, onNavigate
 
 const MyStudentsForRole: React.FC<RoleViewProps> = ({ user, searchQuery, onNavigateTab }) => {
   if (user.roleType === 'faculty') {
-    return <FacultyStudentsTab searchQuery={searchQuery} />;
+    return <FacultyStudentsTab searchQuery={searchQuery} onNavigateTab={onNavigateTab} />;
   }
   return <EmptyTab tabId="my-students" onBackToHome={() => onNavigateTab('home')} />;
 };
@@ -433,6 +444,7 @@ const AuthedLayout: React.FC<AuthedLayoutProps> = ({
   setSearchQuery,
 }) => {
   const currentRole: RoleType = user.roleType ?? 'student';
+  const { data: unreadMessages } = useUnreadMessageCount();
   return (
     <div className="w-full min-h-screen bg-[#f8fafc] flex flex-col xl:flex-row relative font-sans text-slate-800 selection:bg-blue-200">
       <Sidebar
@@ -440,7 +452,7 @@ const AuthedLayout: React.FC<AuthedLayoutProps> = ({
         onLogout={onLogout}
         mobileOpen={mobileSidebarOpen}
         onCloseMobile={() => setMobileSidebarOpen(false)}
-        messageBadge={user.messageBadge ?? 0}
+        messageBadge={unreadMessages ?? 0}
       />
       <main className="flex-1 flex flex-col min-w-0 bg-[#f8fafc] p-4 sm:p-6 lg:p-8 space-y-7">
         <TopBar

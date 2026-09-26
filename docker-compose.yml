@@ -56,8 +56,10 @@ services:
       dockerfile: Dockerfile
     ports:
       - "5001:5001"
+    # Inside a container "localhost" is the container itself, so the Python
+    # services reach the others by their compose service names.
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-campus}:${POSTGRES_PASSWORD:-campus}@postgres:5432/${POSTGRES_DB:-campus_db}
 
   whisper-service:
     build:
@@ -66,11 +68,16 @@ services:
     ports:
       - "5002:5002"
     environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-campus}:${POSTGRES_PASSWORD:-campus}@postgres:5432/${POSTGRES_DB:-campus_db}
+      - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - BACKEND_URL=http://backend:4000
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
+      # The backend runs on the host (npm run dev), not in compose.
+      - BACKEND_URL=http://host.docker.internal:${PORT:-4000}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - whisper_models:/root/.cache/whisper
 

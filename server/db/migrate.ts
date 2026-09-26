@@ -7,6 +7,7 @@ import bcrypt from 'bcryptjs';
 import { pool } from './client.js';
 import { config } from '../config.js';
 import { indexMaterial } from '../lib/rag.js';
+import { seedDemoFiles } from './seed-files.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, '..', 'migrations');
@@ -281,6 +282,9 @@ async function runMigrations(): Promise<void> {
     '008_security_hardening.sql',
     '009_features.sql',
     '010_teaching_assistant.sql',
+    '011_faculty_profile.sql',
+    '012_community_settings.sql',
+    '013_settings_avatars_due_dates.sql',
   ];
 
   for (const filename of files) {
@@ -636,13 +640,31 @@ async function seedFacultyCore(): Promise<void> {
     { code: 'MATH-201', file: 'MATH201_Calculus_Practice_Set_03.pdf', type: 'Assignment PDF', size: '1.8 MB', date: '2024-07-09' },
     { code: 'CS-401', file: 'CS401_A*Search_Implementation_Guide.zip', type: 'Lab Archive Code', size: '8.7 MB', date: '2024-07-05' },
   ];
+  // Upload the actual files so the demo materials can be opened. If object
+  // storage is unavailable the rows are still seeded, just not openable.
+  let demoFileSizes = new Map<string, string>();
+  try {
+    demoFileSizes = await seedDemoFiles();
+    console.log('Uploaded demo course material files');
+  } catch (err) {
+    console.warn('Could not upload demo material files:', (err as Error).message);
+  }
+
   for (const m of MATERIALS) {
     const cid = courseIdByCode.get(m.code);
     if (!cid) continue;
     await pool.query(
       `INSERT INTO course_materials (course_id, faculty_id, file_name, file_key, file_size, material_type, uploaded_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [cid, facultyId, m.file, `courses/${m.code.toLowerCase()}/materials/${m.file}`, m.size, m.type, m.date]
+      [
+        cid,
+        facultyId,
+        m.file,
+        `courses/${m.code.toLowerCase()}/materials/${m.file}`,
+        demoFileSizes.get(m.file) ?? m.size,
+        m.type,
+        m.date,
+      ]
     );
   }
 
@@ -1182,6 +1204,17 @@ async function seedTA(): Promise<void> {
   console.log('Seeded teaching assistant data');
 }
 
+// Spread demo deadlines around today (one a week, starting ten days ago) so
+// Grade Entry shows both overdue and upcoming assessments. Leaves dates a
+// faculty member has set alone.
+async function seedAssessmentDueDates(): Promise<void> {
+  await pool.query(
+    `UPDATE assessments SET due_date = CURRENT_DATE + (COALESCE(display_order, 0) * 7 - 10)
+     WHERE due_date IS NULL`
+  );
+  console.log('Seeded assessment due dates');
+}
+
 async function main(): Promise<void> {
   try {
     await runMigrations();
@@ -1192,6 +1225,7 @@ async function main(): Promise<void> {
     await seedPhase5();
     await seedPhase6();
     await seedTA();
+    await seedAssessmentDueDates();
   } catch (err) {
     console.error('Migration failed:', err);
     process.exitCode = 1;

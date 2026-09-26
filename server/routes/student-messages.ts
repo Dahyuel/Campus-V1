@@ -1,7 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { query } from '../db/client.js';
-import { escapeHtml } from '../lib/sanitize.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -69,10 +68,10 @@ export default async function studentMessagesRoutes(fastify: FastifyInstance): P
         return {
           id: `conv-${idx + 1}`,
           userId: r.other_id,
-          senderName: escapeHtml(r.other_name),
-          senderRole: escapeHtml(roleLabel),
+          senderName: r.other_name,
+          senderRole: roleLabel,
           avatarUrl: undefined,
-          lastMessage: escapeHtml(r.body),
+          lastMessage: r.body,
           timestamp: formatTime(r.sent_at),
           unreadCount: r.read_at === null && r.sender_id !== studentId ? 1 : 0,
           isOnline: true,
@@ -101,14 +100,14 @@ export default async function studentMessagesRoutes(fastify: FastifyInstance): P
     );
 
     const otherName = await query<{ name: string }>(`SELECT name FROM users WHERE id = $1 LIMIT 1`, [userId]);
-    const otherNameStr = escapeHtml(otherName[0]?.name ?? 'Unknown');
+    const otherNameStr = otherName[0]?.name ?? 'Unknown';
 
     return reply.status(200).send(
       rows.map((r) => ({
         id: r.id,
         sender: r.sender_id === studentId ? ('me' as const) : ('them' as const),
         senderName: r.sender_id === studentId ? 'Me' : otherNameStr,
-        text: escapeHtml(r.body),
+        text: r.body,
         time: formatTime(r.sent_at),
       }))
     );
@@ -126,7 +125,7 @@ export default async function studentMessagesRoutes(fastify: FastifyInstance): P
       id: inserted[0].id,
       sender: 'me' as const,
       senderName: 'Me',
-      text: escapeHtml(body),
+      text: body,
       time: formatTime(inserted[0].sent_at),
     });
   });

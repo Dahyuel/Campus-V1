@@ -7,6 +7,97 @@ export const useFacultyDashboard = () =>
     queryFn: () => api.get('/faculty/dashboard').then((r) => r.data),
   });
 
+export interface OfficeHourSlot {
+  day: string;
+  start: string;
+  end: string;
+  location: string;
+  isClosed: boolean;
+}
+
+export interface FacultyProfile {
+  name: string;
+  email: string;
+  phone: string;
+  rank: string;
+  codeId: string;
+  avatarUrl: string | null;
+  department: string | null;
+  courseCount: number;
+  creditHours: number;
+  studentCount: number;
+  preferences: FacultyPreferences;
+  officeHours: OfficeHourSlot[];
+}
+
+export type MutableNotificationType = 'grade' | 'alert';
+
+export interface FacultyPreferences {
+  mutedNotificationTypes: MutableNotificationType[];
+  defaultCourseId: string | null;
+}
+
+export const useSaveFacultyPreferences = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (prefs: FacultyPreferences) =>
+      api.patch('/faculty/preferences', prefs).then((r) => r.data as FacultyPreferences),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['faculty', 'profile'] });
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+    },
+  });
+};
+
+export const useUploadAvatar = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      return api
+        .post('/faculty/profile/avatar', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+        .then((r) => r.data as { avatarUrl: string });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'profile'] }),
+  });
+};
+
+export const useChangePassword = () =>
+  useMutation({
+    mutationFn: (payload: { currentPassword: string; newPassword: string }) =>
+      api.post('/auth/change-password', payload).then((r) => r.data),
+  });
+
+export const useSetAssessmentDueDate = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ assessmentId, dueDate }: { assessmentId: string; dueDate: string | null }) =>
+      api.patch(`/faculty/assessments/${assessmentId}/due-date`, { dueDate }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'assessments'] }),
+  });
+};
+
+export const useFacultyProfile = () =>
+  useQuery<FacultyProfile>({
+    queryKey: ['faculty', 'profile'],
+    queryFn: () => api.get('/faculty/profile').then((r) => r.data),
+  });
+
+export const useSaveFacultyProfile = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      name: string;
+      email: string;
+      phone: string;
+      rank: string;
+      officeHours: OfficeHourSlot[];
+    }) => api.patch('/faculty/profile', payload).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'profile'] }),
+  });
+};
+
 export const useFacultyCourses = () =>
   useQuery({
     queryKey: ['faculty', 'courses'],
@@ -62,6 +153,21 @@ export const useFacultyMessages = () =>
     queryFn: () => api.get('/faculty/messages').then((r) => r.data),
   });
 
+export const useBroadcastToStudents = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { studentIds: string[]; body: string }) =>
+      api.post('/faculty/messages/broadcast', payload).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'messages'] }),
+  });
+};
+
+export const useFacultyMessageRecipients = () =>
+  useQuery({
+    queryKey: ['faculty', 'message-recipients'],
+    queryFn: () => api.get('/faculty/message-recipients').then((r) => r.data),
+  });
+
 export const useFacultyMessageThread = (userId: string | null) =>
   useQuery({
     queryKey: ['faculty', 'messages', userId],
@@ -112,7 +218,24 @@ export const useReleaseGrades = () => {
   return useMutation({
     mutationFn: (payload: { courseId: string; assessmentTitle: string }) =>
       api.post('/faculty/grades/release', payload).then((r) => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'grades'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['faculty', 'grades'] });
+      qc.invalidateQueries({ queryKey: ['faculty', 'assessments'] });
+    },
+  });
+};
+
+export const useReviewTaSubmission = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ submissionId, decision, note }: { submissionId: string; decision: 'approve' | 'reject'; note?: string }) =>
+      api
+        .post(`/faculty/grades/submissions/${submissionId}/${decision}`, decision === 'reject' ? { note } : undefined)
+        .then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['faculty', 'grades'] });
+      qc.invalidateQueries({ queryKey: ['faculty', 'dashboard'] });
+    },
   });
 };
 
@@ -124,6 +247,47 @@ export const useCreateAttendanceSession = () => {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'attendance'] }),
   });
 };
+
+export interface LiveAttendance {
+  isOpen: boolean;
+  expiresAt: string | null;
+  totalStudents: number;
+  presentCount: number;
+  present: Array<{ id: string; name: string; studentId: string; method: string; markedAt: string }>;
+}
+
+/** Polls check-ins while an attendance session is open. */
+export interface SessionRoster {
+  lectureLabel: string;
+  date: string;
+  isOpen: boolean;
+  presentCount: number;
+  absentCount: number;
+  hasRecords: boolean;
+  students: Array<{
+    id: string;
+    name: string;
+    studentId: string;
+    status: 'PRESENT' | 'ABSENT' | 'EXCUSED' | 'NOT RECORDED';
+    method: string | null;
+    markedAt: string | null;
+  }>;
+}
+
+export const useSessionRoster = (sessionId: string | null) =>
+  useQuery<SessionRoster>({
+    queryKey: ['faculty', 'attendance', 'roster', sessionId],
+    queryFn: () => api.get(`/faculty/attendance/session/${sessionId}/roster`).then((r) => r.data),
+    enabled: !!sessionId,
+  });
+
+export const useLiveAttendance = (sessionId: string | null) =>
+  useQuery<LiveAttendance>({
+    queryKey: ['faculty', 'attendance', 'live', sessionId],
+    queryFn: () => api.get(`/faculty/attendance/session/${sessionId}/live`).then((r) => r.data),
+    enabled: !!sessionId,
+    refetchInterval: sessionId ? 5000 : false,
+  });
 
 export const useExtendAttendanceSession = () =>
   useMutation({
@@ -149,6 +313,36 @@ export const useMarkAttendanceManual = () => {
   });
 };
 
+export interface CommunitySettings {
+  allowAnonymous: boolean;
+  autoAiResponse: boolean;
+  postNotifications: boolean;
+}
+
+export const useCommunitySettings = (courseId: string | null) =>
+  useQuery<CommunitySettings>({
+    queryKey: ['faculty', 'community', 'settings', courseId],
+    queryFn: () => api.get(`/faculty/community/settings?courseId=${courseId}`).then((r) => r.data),
+    enabled: !!courseId,
+  });
+
+export const useSaveCommunitySettings = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { courseId: string } & Partial<CommunitySettings>) =>
+      api.patch('/faculty/community/settings', payload).then((r) => r.data),
+    onSuccess: (_, vars) =>
+      qc.invalidateQueries({ queryKey: ['faculty', 'community', 'settings', vars.courseId] }),
+  });
+};
+
+export const useFacultyRemovedPosts = (courseId: string | null) =>
+  useQuery({
+    queryKey: ['faculty', 'community', 'removed', courseId],
+    queryFn: () => api.get(`/faculty/community/removed?courseId=${courseId}`).then((r) => r.data),
+    enabled: !!courseId,
+  });
+
 const useCommunityPostAction = (action: (postId: string) => Promise<unknown>) => {
   const qc = useQueryClient();
   return useMutation({
@@ -156,6 +350,9 @@ const useCommunityPostAction = (action: (postId: string) => Promise<unknown>) =>
     onSuccess: () => qc.invalidateQueries({ queryKey: ['faculty', 'community'] }),
   });
 };
+
+export const useRestorePost = () =>
+  useCommunityPostAction((postId) => api.patch(`/faculty/community/${postId}/restore`).then((r) => r.data));
 
 export const useTogglePinPost = () =>
   useCommunityPostAction((postId) => api.patch(`/faculty/community/${postId}/pin`).then((r) => r.data));
@@ -174,6 +371,10 @@ export const useSendMessage = () => {
   return useMutation({
     mutationFn: ({ userId, body }: { userId: string; body: string }) =>
       api.post(`/faculty/messages/${userId}`, { body }).then((r) => r.data),
-    onSuccess: (_, vars) => qc.invalidateQueries({ queryKey: ['faculty', 'messages', vars.userId] }),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['faculty', 'messages', vars.userId] });
+      // Refresh the conversation list so a brand-new thread shows up
+      qc.invalidateQueries({ queryKey: ['faculty', 'messages'], exact: true });
+    },
   });
 };

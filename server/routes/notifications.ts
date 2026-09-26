@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { query } from '../db/client.js';
 import { escapeHtml } from '../lib/sanitize.js';
+import { normalizePreferences } from '../lib/preferences.js';
 
 function timeAgo(value: string | Date): string {
   const d = typeof value === 'string' ? new Date(value) : value;
@@ -12,6 +13,12 @@ function timeAgo(value: string | Date): string {
   if (hours < 24) return `${hours} hours ago`;
   if (hours < 48) return 'Yesterday';
   return `${Math.floor(hours / 24)} days ago`;
+}
+
+// Types the user switched off in Settings; they stay stored but are hidden.
+async function mutedTypes(userId: string): Promise<string[]> {
+  const rows = await query<{ preferences: unknown }>(`SELECT preferences FROM users WHERE id = $1`, [userId]);
+  return normalizePreferences(rows[0]?.preferences).mutedNotificationTypes;
 }
 
 async function requireAnyAuth(request: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -31,8 +38,9 @@ export default async function notificationRoutes(fastify: FastifyInstance): Prom
       created_at: string;
     }>(
       `SELECT id, title, body, type, read_at, created_at FROM notifications
-       WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`,
-      [request.user!.id]
+       WHERE user_id = $1 AND COALESCE(type, 'info') <> ALL($2::text[])
+       ORDER BY created_at DESC LIMIT 20`,
+      [request.user!.id, await mutedTypes(request.user!.id)]
     );
     return reply.status(200).send(
       rows.map((n) => ({
@@ -48,7 +56,19 @@ export default async function notificationRoutes(fastify: FastifyInstance): Prom
 
   fastify.get('/unread-count', async (request, reply) => {
     const rows = await query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM notifications WHERE user_id = $1 AND read_at IS NULL`,
+      `SELECT COUNT(*)::text AS count FROM notifications
+       WHERE user_id = $1 AND read_at IS NULL AND COALESCE(type, 'info') <> ALL($2::text[])`,
+      [request.user!.id, await mutedTypes(request.user!.id)]
+    );
+    return reply.status(200).send({ count: Number(rows[0]?.count ?? 0) });
+  });
+
+  // Unread direct messages for the signed-in user, for the sidebar badge.
+  // Role-agnostic: the messages table is shared by every role.
+  fastify.get('/unread-messages', async (request, reply) => {
+    const rows = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM messages
+       WHERE recipient_id = $1 AND read_at IS NULL`,
       [request.user!.id]
     );
     return reply.status(200).send({ count: Number(rows[0]?.count ?? 0) });

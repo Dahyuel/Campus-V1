@@ -13,14 +13,16 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { FacultyStudentRow } from '../../data/facultyMockData';
-import { useFacultyStudents } from '../../hooks/useFacultyData';
+import { useFacultyStudents, useBroadcastToStudents } from '../../hooks/useFacultyData';
 
 interface FacultyStudentsTabProps {
   searchQuery?: string;
+  onNavigateTab?: (tab: string, params?: Record<string, string>) => void;
 }
 
 export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
   searchQuery = '',
+  onNavigateTab,
 }) => {
   const { data, isLoading } = useFacultyStudents();
   const FACULTY_STUDENTS_LIST: FacultyStudentRow[] = data ?? [];
@@ -31,6 +33,9 @@ export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
   const [sortBy, setSortBy] = useState<'Name' | 'GPA' | 'Attendance' | 'Risk Level'>('Name');
   const [selectedStudent, setSelectedStudent] = useState<FacultyStudentRow | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isBroadcastOpen, setIsBroadcastOpen] = useState(false);
+  const [broadcastBody, setBroadcastBody] = useState('');
+  const broadcast = useBroadcastToStudents();
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -81,11 +86,38 @@ export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
   });
 
   const handleExportList = () => {
-    showToast('Exported student roster (CSV) successfully');
+    const header = ['Name', 'Student ID', 'Course', 'Attendance %', 'Current Grade', 'GPA', 'Status'];
+    const escapeCell = (value: string | number | null) => {
+      const text = value === null ? '' : String(value);
+      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const rows = filteredStudents.map((s) =>
+      [s.name, s.studentId, s.course, s.attendance, s.currentGrade, s.gpa, s.status].map(escapeCell).join(',')
+    );
+    // BOM so Excel reads UTF-8 names correctly
+    const csv = `﻿${[header.join(','), ...rows].join('\r\n')}`;
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `students-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast(`Exported ${filteredStudents.length} row${filteredStudents.length === 1 ? '' : 's'} to CSV`);
   };
 
-  const handleMessageAll = () => {
-    showToast('Broadcast composer opened for selected student cohort');
+  const cohortIds = [...new Set(filteredStudents.map((s) => s.id))];
+
+  const handleSendBroadcast = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!broadcastBody.trim() || cohortIds.length === 0) return;
+    try {
+      const result = await broadcast.mutateAsync({ studentIds: cohortIds, body: broadcastBody.trim() });
+      setIsBroadcastOpen(false);
+      setBroadcastBody('');
+      showToast(`Message sent to ${result.sent} student${result.sent === 1 ? '' : 's'}`);
+    } catch {
+      showToast('Could not send the message. Please try again.');
+    }
   };
 
   return (
@@ -211,11 +243,12 @@ export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
             </button>
             <button
               id="btn-message-all-students"
-              onClick={handleMessageAll}
-              className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer"
+              onClick={() => setIsBroadcastOpen(true)}
+              disabled={cohortIds.length === 0}
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Mail className="w-3.5 h-3.5" />
-              <span>Message All</span>
+              <span>Message {cohortIds.length === 1 ? 'Student' : `All (${cohortIds.length})`}</span>
             </button>
           </div>
         </div>
@@ -240,7 +273,7 @@ export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
                 const isAtRisk = student.status === 'AT RISK';
                 return (
                   <tr
-                    key={student.id}
+                    key={student.rowId ?? `${student.id}:${student.course}`}
                     className={`transition-colors ${
                       isAtRisk
                         ? 'bg-rose-50/50 hover:bg-rose-50/80'
@@ -360,8 +393,9 @@ export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
             <div className="mt-5 flex gap-2">
               <button
                 onClick={() => {
-                  showToast(`Direct message started with ${selectedStudent.name}`);
+                  const target = selectedStudent.id;
                   setSelectedStudent(null);
+                  onNavigateTab?.('messages', { userId: target });
                 }}
                 className="flex-1 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all cursor-pointer"
               >
@@ -374,6 +408,57 @@ export const FacultyStudentsTab: React.FC<FacultyStudentsTabProps> = ({
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Message the filtered cohort */}
+      {isBroadcastOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full border border-slate-100 shadow-2xl animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-bold text-slate-900 text-sm">
+                Message {cohortIds.length} student{cohortIds.length === 1 ? '' : 's'}
+              </h3>
+              <button
+                onClick={() => setIsBroadcastOpen(false)}
+                className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-500 mb-4">
+              Everyone currently shown by your filters gets this as a direct message. Each reply comes
+              back to you privately.
+            </p>
+
+            <form onSubmit={handleSendBroadcast} className="space-y-4">
+              <textarea
+                required
+                autoFocus
+                rows={5}
+                value={broadcastBody}
+                onChange={(e) => setBroadcastBody(e.target.value)}
+                placeholder="e.g. Reminder: the midterm covers chapters 1 to 7."
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-hidden focus:border-[#3256a8] focus:ring-1 focus:ring-[#3256a8] resize-none"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={broadcast.isPending || !broadcastBody.trim()}
+                  className="flex-1 py-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {broadcast.isPending ? 'Sending…' : 'Send Message'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsBroadcastOpen(false)}
+                  className="px-4 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

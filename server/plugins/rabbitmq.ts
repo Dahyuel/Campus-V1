@@ -4,6 +4,9 @@ import amqp, { Channel, ChannelModel } from 'amqplib';
 import { query } from '../db/client.js';
 
 const EXCHANGE = 'campus.events';
+const TRANSCRIPTION_RETRY_MS = 30_000;
+// 20 tries at 30s apart: about ten minutes before a recording is marked FAILED.
+const TRANSCRIPTION_MAX_ATTEMPTS = 20;
 
 export interface AmqpClient {
   channel: Channel;
@@ -282,13 +285,17 @@ export default fp(async function rabbitMQPlugin(fastify: FastifyInstance): Promi
     await channel.consume('transcription.queue', (msg) => {
       if (!msg) return;
       void (async () => {
+        let payload: { recordingId: string; fileKey: string; courseCode: string };
         try {
-          const payload = JSON.parse(msg.content.toString()) as {
-            recordingId: string;
-            fileKey: string;
-            courseCode: string;
-          };
-          await fetch(`${process.env.WHISPER_SERVICE_URL ?? 'http://localhost:5002'}/transcribe`, {
+          payload = JSON.parse(msg.content.toString());
+        } catch {
+          fastify.log.error('transcription message is not valid JSON; dropping it');
+          channel.ack(msg);
+          return;
+        }
+        const attempts = Number(msg.properties.headers?.['x-attempts'] ?? 0) + 1;
+        try {
+          const res = await fetch(`${process.env.WHISPER_SERVICE_URL ?? 'http://localhost:5002'}/transcribe`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -297,10 +304,33 @@ export default fp(async function rabbitMQPlugin(fastify: FastifyInstance): Promi
               bucket: process.env.MINIO_BUCKET ?? 'campus-materials',
             }),
           });
+          if (!res.ok) throw new Error(`whisper service responded ${res.status}`);
           channel.ack(msg);
         } catch (err) {
-          fastify.log.error({ err }, 'transcription consumer failed');
-          channel.nack(msg, false, true);
+          if (attempts >= TRANSCRIPTION_MAX_ATTEMPTS) {
+            // Give up so the recording shows as failed instead of processing forever.
+            fastify.log.error({ err, recordingId: payload.recordingId, attempts }, 'transcription gave up');
+            try {
+              await query(`UPDATE lecture_recordings SET status = 'FAILED' WHERE id = $1`, [payload.recordingId]);
+            } finally {
+              channel.ack(msg);
+            }
+            return;
+          }
+          // Whisper is down or rejected the job. Retry after a pause, carrying
+          // the attempt count (a plain requeue can't), without a hot loop.
+          fastify.log.error({ err, attempts }, 'transcription consumer failed; retrying in 30s');
+          setTimeout(() => {
+            try {
+              channel.sendToQueue('transcription.queue', msg.content, {
+                persistent: true,
+                headers: { ...msg.properties.headers, 'x-attempts': attempts },
+              });
+              channel.ack(msg);
+            } catch {
+              // channel closed meanwhile; the broker redelivers unacked messages
+            }
+          }, TRANSCRIPTION_RETRY_MS);
         }
       })();
     });

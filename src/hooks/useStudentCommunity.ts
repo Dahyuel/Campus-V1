@@ -8,6 +8,14 @@ export const useStudentCommunityPosts = (courseCode?: string) =>
       api.get(`/student/community${courseCode ? `?courseCode=${courseCode}` : ''}`).then((r) => r.data),
   });
 
+export const useCommunitySettings = (courseCode?: string) =>
+  useQuery({
+    queryKey: ['student', 'community', 'settings', courseCode],
+    queryFn: () =>
+      api.get(`/student/community/settings?courseCode=${courseCode}`).then((r) => r.data),
+    enabled: !!courseCode,
+  });
+
 export const useCreateCommunityPost = () => {
   const qc = useQueryClient();
   return useMutation({

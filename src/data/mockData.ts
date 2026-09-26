@@ -153,7 +153,7 @@ export const ROLE_NAVIGATION: Record<RoleType, NavItemConfig[]> = {
     { id: 'recordings', label: 'Recordings', iconName: 'Video', badge: 'NEW' },
     { id: 'community', label: 'Community', iconName: 'Users' },
     { id: 'ai-tutor', label: 'AI Tutor', iconName: 'Bot', badge: 'AI' },
-    { id: 'messages', label: 'Messages', iconName: 'MessageSquare', badge: 2 },
+    { id: 'messages', label: 'Messages', iconName: 'MessageSquare' },
     { id: 'settings', label: 'Settings', iconName: 'Settings' },
     { id: 'help', label: 'Help', iconName: 'HelpCircle' },
   ],
@@ -163,7 +163,9 @@ export const ROLE_NAVIGATION: Record<RoleType, NavItemConfig[]> = {
     { id: 'my-students', label: 'My Students', iconName: 'Users' },
     { id: 'attendance', label: 'Attendance', iconName: 'CheckCircle2' },
     { id: 'grade-entry', label: 'Grade Entry', iconName: 'BarChart2' },
-    { id: 'messages', label: 'Messages', iconName: 'MessageSquare', badge: 4 },
+    { id: 'smart-schedule', label: 'Smart Schedule', iconName: 'Sparkles', badge: 'NEW' },
+    { id: 'recordings', label: 'Recordings', iconName: 'Video', badge: 'NEW' },
+    { id: 'messages', label: 'Messages', iconName: 'MessageSquare' },
     { id: 'course-community', label: 'Course Community', iconName: 'Pin' },
     { id: 'settings', label: 'Settings', iconName: 'Settings' },
     { id: 'help', label: 'Help', iconName: 'HelpCircle' },
@@ -177,7 +179,7 @@ export const ROLE_NAVIGATION: Record<RoleType, NavItemConfig[]> = {
     { id: 'exam-scheduling', label: 'Exam Scheduling', iconName: 'Calendar' },
     { id: 'analytics', label: 'Analytics', iconName: 'BarChart3' },
     { id: 'reports', label: 'Reports', iconName: 'FileText' },
-    { id: 'messages', label: 'Messages', iconName: 'MessageSquare', badge: 7 },
+    { id: 'messages', label: 'Messages', iconName: 'MessageSquare' },
     { id: 'settings', label: 'Settings', iconName: 'Settings' },
     { id: 'help', label: 'Help', iconName: 'HelpCircle' },
   ],
@@ -189,7 +191,7 @@ export const ROLE_NAVIGATION: Record<RoleType, NavItemConfig[]> = {
     { id: 'analytics', label: 'Analytics', iconName: 'BarChart3' },
     { id: 'at-risk', label: 'At-Risk Students', iconName: 'AlertTriangle' },
     { id: 'reports', label: 'Reports', iconName: 'FileText' },
-    { id: 'messages', label: 'Messages', iconName: 'MessageSquare', badge: 2 },
+    { id: 'messages', label: 'Messages', iconName: 'MessageSquare' },
     { id: 'settings', label: 'Settings', iconName: 'Settings' },
     { id: 'help', label: 'Help', iconName: 'HelpCircle' },
   ],
@@ -201,7 +203,7 @@ export const ROLE_NAVIGATION: Record<RoleType, NavItemConfig[]> = {
     { id: 'ta-students', label: 'My Students', iconName: 'Users' },
     { id: 'ta-materials', label: 'Materials', iconName: 'FolderOpen' },
     { id: 'ta-academic-record', label: 'Academic Record', iconName: 'GraduationCap' },
-    { id: 'messages', label: 'Messages', iconName: 'MessageSquare', badge: 3 },
+    { id: 'messages', label: 'Messages', iconName: 'MessageSquare' },
     { id: 'settings', label: 'Settings', iconName: 'Settings' },
     { id: 'help', label: 'Help', iconName: 'HelpCircle' },
   ],
@@ -212,7 +214,7 @@ export const ROLE_NAVIGATION: Record<RoleType, NavItemConfig[]> = {
     { id: 'financial-overview', label: 'Financial Overview', iconName: 'DollarSign' },
     { id: 'university-analytics', label: 'University Analytics', iconName: 'BarChart3' },
     { id: 'reports', label: 'Reports', iconName: 'FileText' },
-    { id: 'messages', label: 'Messages', iconName: 'MessageSquare', badge: 5 },
+    { id: 'messages', label: 'Messages', iconName: 'MessageSquare' },
     { id: 'settings', label: 'Settings', iconName: 'Settings' },
     { id: 'help', label: 'Help', iconName: 'HelpCircle' },
   ],
@@ -306,6 +308,7 @@ export const NOTIFICATIONS = [
 // ==========================================
 export interface TeachingScheduleItem {
   id: string;
+  courseId?: string;
   courseName: string;
   code: string;
   room: string;

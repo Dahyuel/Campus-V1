@@ -30,7 +30,7 @@ const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 interface FacultyCoursesTabProps {
   searchQuery?: string;
-  onNavigateTab: (tab: TabId) => void;
+  onNavigateTab: (tab: TabId, params?: Record<string, string>) => void;
 }
 
 export const FacultyCoursesTab: React.FC<FacultyCoursesTabProps> = ({
@@ -295,21 +295,21 @@ export const FacultyCoursesTab: React.FC<FacultyCoursesTabProps> = ({
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-5 pt-4 border-t border-slate-100">
                 <button
                   id={`btn-attendance-${course.id}`}
-                  onClick={() => onNavigateTab('attendance')}
+                  onClick={() => onNavigateTab('attendance', { courseId: course.id })}
                   className="w-full py-2 px-2.5 bg-[#3256a8] hover:bg-[#284588] text-white text-xs font-bold rounded-xl transition-all shadow-xs text-center truncate cursor-pointer"
                 >
                   Start Attendance
                 </button>
                 <button
                   id={`btn-grades-${course.id}`}
-                  onClick={() => onNavigateTab('grade-entry')}
+                  onClick={() => onNavigateTab('grade-entry', { courseId: course.id })}
                   className="w-full py-2 px-2.5 bg-white border border-slate-200 hover:border-[#3256a8] hover:text-[#3256a8] text-slate-700 text-xs font-bold rounded-xl transition-all text-center truncate cursor-pointer"
                 >
                   Enter Grades
                 </button>
                 <button
                   id={`btn-community-${course.id}`}
-                  onClick={() => onNavigateTab('course-community')}
+                  onClick={() => onNavigateTab('course-community', { courseId: course.id })}
                   className="w-full py-2 px-2.5 bg-white border border-slate-200 hover:border-[#3256a8] hover:text-[#3256a8] text-slate-700 text-xs font-bold rounded-xl transition-all text-center truncate cursor-pointer"
                 >
                   Community

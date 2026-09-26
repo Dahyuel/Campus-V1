@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   CheckCircle2,
   AlertCircle,
@@ -12,10 +13,13 @@ import {
 import { GradeEntryRow } from '../../data/facultyMockData';
 import {
   useFacultyCourses,
+  useFacultyProfile,
   useFacultyAssessments,
   useFacultyGrades,
   useSaveGrades,
   useReleaseGrades,
+  useReviewTaSubmission,
+  useSetAssessmentDueDate,
 } from '../../hooks/useFacultyData';
 import { useEffect } from 'react';
 
@@ -32,13 +36,53 @@ interface FacultyAssessment {
   type: string;
   weight: string;
   outOf: number;
+  dueDate: string | null;
+  released: boolean;
+}
+
+// Whole days from today to a YYYY-MM-DD date, in local time.
+const daysUntil = (isoDate: string): number => {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const today = new Date();
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return Math.round((new Date(y, m - 1, d).getTime() - startOfToday.getTime()) / 86_400_000);
+};
+
+const dueStatus = (a: FacultyAssessment): { text: string; tone: 'overdue' | 'soon' | 'normal' } | null => {
+  if (!a.dueDate) return null;
+  const days = daysUntil(a.dueDate);
+  if (a.released) return { text: 'Released', tone: 'normal' };
+  if (days < 0) return { text: `Overdue by ${-days} ${days === -1 ? 'day' : 'days'}`, tone: 'overdue' };
+  if (days === 0) return { text: 'Due today', tone: 'soon' };
+  if (days <= 3) return { text: `Due in ${days} ${days === 1 ? 'day' : 'days'}`, tone: 'soon' };
+  return { text: `Due in ${days} days`, tone: 'normal' };
+};
+
+const DUE_TONE_CLASS = {
+  overdue: 'text-rose-600',
+  soon: 'text-amber-600',
+  normal: 'text-slate-500',
+};
+
+interface TaPendingSubmission {
+  submissionId: string;
+  taName: string;
+  taCode: string;
+  sectionLabel: string;
+  assessmentTitle: string;
+  submittedAt: string;
+  gradedCount: number;
 }
 
 export const FacultyGradeEntryTab: React.FC = () => {
+  const [searchParams] = useSearchParams();
   const { data: coursesData } = useFacultyCourses();
   const courses: FacultyCourse[] = coursesData ?? [];
-  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
-  const activeCourse = courses.find((c) => c.id === selectedCourseId) ?? courses[0] ?? null;
+  // Opened from a course card: start on that course
+  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(searchParams.get('courseId'));
+  const defaultCourseId = useFacultyProfile().data?.preferences.defaultCourseId ?? null;
+  const activeCourse =
+    courses.find((c) => c.id === selectedCourseId) ?? courses.find((c) => c.id === defaultCourseId) ?? courses[0] ?? null;
   const activeCourseId = activeCourse?.id ?? null;
 
   const { data: assessmentsData } = useFacultyAssessments(activeCourseId);
@@ -51,6 +95,9 @@ export const FacultyGradeEntryTab: React.FC = () => {
   const { data: gradesData } = useFacultyGrades(activeAssessment ? activeCourseId : null, activeAssessment);
   const saveGrades = useSaveGrades();
   const releaseGrades = useReleaseGrades();
+  const reviewSubmission = useReviewTaSubmission();
+  const setDueDate = useSetAssessmentDueDate();
+  const taSubmissions: TaPendingSubmission[] = gradesData?.taPendingSubmissions ?? [];
   const [gradeRows, setGradeRows] = useState<GradeEntryRow[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -104,6 +151,28 @@ export const FacultyGradeEntryTab: React.FC = () => {
     : 0;
   const highest = validPcts.length > 0 ? Math.max(...validPcts) : 0;
   const lowest = validPcts.length > 0 ? Math.min(...validPcts) : 0;
+
+  const handleReviewSubmission = async (sub: TaPendingSubmission, decision: 'approve' | 'reject') => {
+    let note: string | undefined;
+    if (decision === 'reject') {
+      const entered = window.prompt(
+        `Why are you returning ${sub.taName}'s ${sub.assessmentTitle} grades? They will see this note.`,
+        ''
+      );
+      if (entered === null) return;
+      note = entered.trim();
+    }
+    try {
+      await reviewSubmission.mutateAsync({ submissionId: sub.submissionId, decision, note });
+      showToast(
+        decision === 'approve'
+          ? `Approved ${sub.taName}'s grades for ${sub.assessmentTitle}.`
+          : `Returned ${sub.taName}'s grades for correction.`
+      );
+    } catch {
+      showToast('Could not record your review. Please try again.');
+    }
+  };
 
   const handleSaveDraft = async () => {
     if (!activeCourseId) return;
@@ -164,20 +233,25 @@ export const FacultyGradeEntryTab: React.FC = () => {
             {assessments.length === 0 && (
               <span className="text-xs text-slate-500">No assessments defined for this course.</span>
             )}
-            {assessments.map((ass) => (
-              <button
-                key={ass.id}
-                id={`btn-assessment-${ass.id}`}
-                onClick={() => setSelectedAssessment(ass.title)}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${
-                  activeAssessment === ass.title
-                    ? 'bg-[#3256a8] text-white shadow-xs'
-                    : 'bg-white border border-slate-200 text-slate-700 hover:border-slate-300'
-                }`}
-              >
-                {ass.title}
-              </button>
-            ))}
+            {assessments.map((ass) => {
+              const overdue = dueStatus(ass)?.tone === 'overdue';
+              return (
+                <button
+                  key={ass.id}
+                  id={`btn-assessment-${ass.id}`}
+                  onClick={() => setSelectedAssessment(ass.title)}
+                  title={overdue ? 'Grades not released and past the due date' : undefined}
+                  className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    activeAssessment === ass.title
+                      ? 'bg-[#3256a8] text-white shadow-xs'
+                      : 'bg-white border border-slate-200 text-slate-700 hover:border-slate-300'
+                  }`}
+                >
+                  {overdue && <span className="w-1.5 h-1.5 rounded-full bg-rose-500" aria-hidden="true" />}
+                  {ass.title}
+                </button>
+              );
+            })}
           </div>
 
           {currentAssessment && (
@@ -185,9 +259,80 @@ export const FacultyGradeEntryTab: React.FC = () => {
               <span>
                 {currentAssessment.type} · Weight: {currentAssessment.weight} · Max Grade: {currentAssessment.outOf}
               </span>
+              <label className="flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                <span>Due</span>
+                <input
+                  type="date"
+                  value={currentAssessment.dueDate ?? ''}
+                  disabled={setDueDate.isPending}
+                  onChange={(e) =>
+                    setDueDate.mutate(
+                      { assessmentId: currentAssessment.id, dueDate: e.target.value || null },
+                      { onError: () => showToast('Could not save the due date. Please try again.') }
+                    )
+                  }
+                  className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs text-slate-700 focus:outline-hidden focus:border-[#3256a8]"
+                />
+              </label>
+              {(() => {
+                const status = dueStatus(currentAssessment);
+                return status ? (
+                  <span className={`font-bold ${DUE_TONE_CLASS[status.tone]}`}>{status.text}</span>
+                ) : null;
+              })()}
             </div>
           )}
         </div>
+
+        {/* Teaching assistant submissions awaiting review */}
+        {taSubmissions.length > 0 && (
+          <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-200">
+            <div className="flex items-center gap-1.5 mb-3">
+              <Layers className="w-3.5 h-3.5 text-amber-700" />
+              <span className="text-xs font-extrabold uppercase tracking-wider text-amber-800">
+                TA grades awaiting your review
+              </span>
+            </div>
+            <div className="space-y-2.5">
+              {taSubmissions.map((sub) => (
+                <div
+                  key={sub.submissionId}
+                  className="p-3 bg-white rounded-xl border border-amber-100 flex flex-wrap items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-slate-900">
+                      {sub.assessmentTitle} · {sub.sectionLabel}
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      {sub.taName} ({sub.taCode}) · {sub.gradedCount} grade{sub.gradedCount === 1 ? '' : 's'} · submitted {sub.submittedAt}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      id={`btn-approve-ta-${sub.submissionId}`}
+                      onClick={() => handleReviewSubmission(sub, 'approve')}
+                      disabled={reviewSubmission.isPending}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Approve</span>
+                    </button>
+                    <button
+                      id={`btn-reject-ta-${sub.submissionId}`}
+                      onClick={() => handleReviewSubmission(sub, 'reject')}
+                      disabled={reviewSubmission.isPending}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-rose-200 text-rose-700 hover:bg-rose-50 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      <AlertCircle className="w-3.5 h-3.5" />
+                      <span>Return</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Main Grade Entry Table */}
         <div className="overflow-x-auto">

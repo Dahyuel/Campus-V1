@@ -24,6 +24,7 @@ import smartScheduleRoutes from './routes/smart-schedule.js';
 import todoRoutes from './routes/todos.js';
 import recordingRoutes from './routes/recordings.js';
 import internalRoutes from './routes/internal.js';
+import avatarRoutes from './routes/avatars.js';
 import multipart from '@fastify/multipart';
 import { redis } from './redis.js';
 
@@ -77,7 +78,10 @@ async function main(): Promise<void> {
     redis,
     nameSpace: 'ratelimit:',
     keyGenerator: (request) => request.ip,
+    // The plugin throws this object, so it must carry the status code or the
+    // error handler turns it into a 500.
     errorResponseBuilder: (_req, context) => ({
+      statusCode: context.statusCode,
       error: 'Too many requests',
       retryAfter: context.after,
     }),
@@ -90,6 +94,8 @@ async function main(): Promise<void> {
   await app.register(studentCommunityRoutes, { prefix: '/student' });
 
   await app.register(facultyRoutes, { prefix: '/faculty' });
+
+  await app.register(taRoutes, { prefix: '/ta' });
 
   await app.register(adminRoutes, { prefix: '/admin' });
   await app.register(adminMessagesRoutes, { prefix: '/admin' });
@@ -106,12 +112,17 @@ async function main(): Promise<void> {
   await app.register(todoRoutes, { prefix: '/todos' });
   await app.register(recordingRoutes);
   await app.register(internalRoutes, { prefix: '/internal' });
+  await app.register(avatarRoutes);
 
   app.get('/health', async (_request, reply) => {
     return reply.status(200).send({ status: 'ok' });
   });
 
-  app.setErrorHandler((error: Error & { validation?: unknown; statusCode?: number }, _request, reply) => {
+  app.setErrorHandler((error: Error & { validation?: unknown; statusCode?: number; retryAfter?: string }, _request, reply) => {
+    if (error.statusCode === 429) {
+      return reply.status(429).send({ error: 'Too many requests', retryAfter: error.retryAfter });
+    }
+
     const errorId = randomUUID();
     app.log.error({ err: { message: error.message, stack: error.stack }, errorId });
 

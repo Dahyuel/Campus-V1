@@ -1,7 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { query } from '../db/client.js';
-import { escapeHtml } from '../lib/sanitize.js';
 import { getEmbedding, queryQdrant } from '../lib/rag.js';
 import OpenAI from 'openai';
 
@@ -123,29 +122,44 @@ export default async function studentCommunityRoutes(fastify: FastifyInstance): 
       rows.map((r) => ({
         id: r.id,
         type: r.post_type,
-        course: escapeHtml(r.course_name),
-        courseCode: escapeHtml(r.course_code),
-        author: escapeHtml(r.author_name ?? 'Anonymous'),
+        course: r.course_name,
+        courseCode: r.course_code,
+        author: r.author_name ?? 'Anonymous',
         authorRole: 'Student',
         authorAvatar: undefined,
         avatarUrl: undefined,
         isAnonymous: r.author_name === null,
         timePosted: timeAgo(r.created_at),
-        title: escapeHtml(r.title),
-        body: escapeHtml(r.content),
+        title: r.title,
+        body: r.content,
         upvotes: r.upvotes,
         repliesCount: 0,
         isPinned: r.is_pinned,
         // Faculty flagged the AI answer as wrong: don't show it to students
         aiResponse: r.ai_answer && r.ai_status !== 'correction_needed'
           ? {
-              answer: escapeHtml(r.ai_answer),
-              citation: escapeHtml(r.ai_citation ?? ''),
+              answer: r.ai_answer,
+              citation: r.ai_citation ?? '',
               isFacultyApproved: r.ai_status === 'approved',
             }
           : undefined,
       }))
     );
+  });
+
+  // Community policy for a course, so the post form can hide options
+  // the faculty has turned off.
+  fastify.get('/community/settings', async (request, reply) => {
+    const studentId = request.user!.id;
+    const { courseCode } = request.query as { courseCode?: string };
+    if (!courseCode) return reply.status(400).send({ error: 'courseCode is required' });
+    const courseId = await assertEnrolled(studentId, courseCode);
+    if (!courseId) return reply.status(403).send({ error: 'Not enrolled in this course' });
+    const rows = await query<{ allow_anonymous: boolean }>(
+      `SELECT allow_anonymous FROM community_settings WHERE course_id = $1 LIMIT 1`,
+      [courseId]
+    );
+    return reply.status(200).send({ allowAnonymous: rows[0]?.allow_anonymous ?? true });
   });
 
   fastify.post('/community', async (request, reply) => {
@@ -161,6 +175,19 @@ export default async function studentCommunityRoutes(fastify: FastifyInstance): 
     const courseId = await assertEnrolled(studentId, courseCode);
     if (!courseId) {
       return reply.status(403).send({ error: 'Not enrolled in this course' });
+    }
+
+    // Course community policy set by the faculty (missing row = defaults on)
+    const settingsRows = await query<{ allow_anonymous: boolean; auto_ai_response: boolean }>(
+      `SELECT allow_anonymous, auto_ai_response FROM community_settings WHERE course_id = $1 LIMIT 1`,
+      [courseId]
+    );
+    const allowAnonymous = settingsRows[0]?.allow_anonymous ?? true;
+    const autoAiResponse = settingsRows[0]?.auto_ai_response ?? true;
+    if (isAnonymous && !allowAnonymous) {
+      return reply
+        .status(403)
+        .send({ error: 'Anonymous posting is turned off for this course' });
     }
 
     const content = `${title.trim()}\n${body.trim()}`;
@@ -184,8 +211,8 @@ export default async function studentCommunityRoutes(fastify: FastifyInstance): 
     );
     const post = inserted[0];
 
-    // Trigger AI auto-answer async
-    void (async () => {
+    // Trigger AI auto-answer async, unless the faculty turned it off
+    if (autoAiResponse) void (async () => {
       const courseName = post.course_name;
       const answer = await generateAiAnswer(courseCode, courseName, title, body);
       if (answer) {
@@ -199,16 +226,16 @@ export default async function studentCommunityRoutes(fastify: FastifyInstance): 
     return reply.status(200).send({
       id: post.id,
       type: post.post_type,
-      course: escapeHtml(post.course_name),
-      courseCode: escapeHtml(courseCode),
-      author: isAnonymous ? 'Anonymous' : escapeHtml(request.user!.name),
+      course: post.course_name,
+      courseCode: courseCode,
+      author: isAnonymous ? 'Anonymous' : request.user!.name,
       authorRole: 'Student',
       authorAvatar: undefined,
       avatarUrl: undefined,
       isAnonymous,
       timePosted: timeAgo(post.created_at),
-      title: escapeHtml(post.title),
-      body: escapeHtml(body.trim()),
+      title: post.title,
+      body: body.trim(),
       upvotes: post.upvotes,
       repliesCount: 0,
       isPinned: post.is_pinned,

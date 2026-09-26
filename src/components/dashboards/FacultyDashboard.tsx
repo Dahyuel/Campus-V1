@@ -14,8 +14,13 @@ import {
   X,
   Sparkles
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { TeachingScheduleItem } from '../../data/mockData';
-import { useFacultyDashboard } from '../../hooks/useFacultyData';
+import {
+  useFacultyDashboard,
+  useCreateAttendanceSession,
+  useCloseAttendanceSession,
+} from '../../hooks/useFacultyData';
 
 interface FacultyDashboardProps {
   searchQuery?: string;
@@ -31,16 +36,69 @@ export const FacultyDashboard: React.FC<FacultyDashboardProps> = ({
   const FACULTY_PENDING_ACTIONS = dashData?.pendingActions ?? [];
   const FACULTY_AT_RISK_STUDENTS = dashData?.atRiskStudents ?? [];
   const FACULTY_COMMUNITIES = dashData?.communities ?? [];
+  const stats = dashData?.stats;
+  const scheduleDay: string = dashData?.scheduleDay ?? '';
+  const scheduleIsToday: boolean = dashData?.scheduleIsToday ?? true;
 
   const [activeQrCourse, setActiveQrCourse] = useState<TeachingScheduleItem | null>(null);
-  const [completedActions, setCompletedActions] = useState<Record<string, boolean>>({});
+  const [qrSession, setQrSession] = useState<{ sessionId: string; qrToken: string; expiresAt: string } | null>(null);
+  const [qrError, setQrError] = useState<string | null>(null);
+  const [endError, setEndError] = useState<string | null>(null);
   const [selectedStudentProfile, setSelectedStudentProfile] = useState<string | null>(null);
+  const createSession = useCreateAttendanceSession();
+  const closeSession = useCloseAttendanceSession();
 
-  const toggleAction = (id: string) => {
-    setCompletedActions((prev) => ({
-      ...prev,
-      [id]: !prev[id],
-    }));
+  const startAttendance = async (item: TeachingScheduleItem) => {
+    setActiveQrCourse(item);
+    setQrSession(null);
+    setQrError(null);
+    if (!item.courseId) {
+      setQrError('This class has no course linked, so a session cannot be opened.');
+      return;
+    }
+    let latitude: number | undefined;
+    let longitude: number | undefined;
+    if (navigator.geolocation) {
+      try {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
+        );
+        latitude = pos.coords.latitude;
+        longitude = pos.coords.longitude;
+      } catch {
+        // continue without geofencing
+      }
+    }
+    try {
+      const result = await createSession.mutateAsync({
+        courseId: item.courseId,
+        lectureLabel: `${item.code} ${item.time}`.trim(),
+        latitude,
+        longitude,
+        radiusMeters: 100,
+      });
+      setQrSession({ sessionId: result.sessionId, qrToken: result.qrToken, expiresAt: result.expiresAt });
+    } catch {
+      setQrError('Could not open an attendance session. Please try again.');
+    }
+  };
+
+  const closeQrModal = () => {
+    setActiveQrCourse(null);
+    setQrSession(null);
+    setQrError(null);
+    setEndError(null);
+  };
+
+  const endQrSession = async () => {
+    if (!qrSession) return;
+    setEndError(null);
+    try {
+      await closeSession.mutateAsync(qrSession.sessionId);
+      closeQrModal();
+    } catch {
+      setEndError('Could not end the session. Try again, or end it from the Attendance tab.');
+    }
   };
 
   if (isLoading) {
@@ -74,7 +132,7 @@ export const FacultyDashboard: React.FC<FacultyDashboardProps> = ({
               Teaching Command Center
             </span>
             <h2 className="text-lg font-bold text-slate-900 tracking-tight mt-0.5">
-              Today's Teaching Schedule
+              {scheduleIsToday ? "Today's Teaching Schedule" : `Next Teaching Day — ${scheduleDay}`}
             </h2>
           </div>
           <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 border border-blue-100/60 rounded-full text-xs font-semibold text-[#3256a8]">
@@ -82,6 +140,12 @@ export const FacultyDashboard: React.FC<FacultyDashboardProps> = ({
             Live Semester Schedule
           </span>
         </div>
+
+        {FACULTY_SCHEDULE.length === 0 && (
+          <p className="text-xs text-slate-500 py-6 text-center">
+            No lectures are scheduled for your courses yet.
+          </p>
+        )}
 
         {/* Horizontal Timeline Row */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -137,7 +201,7 @@ export const FacultyDashboard: React.FC<FacultyDashboardProps> = ({
                 <div className="pt-4 mt-3 border-t border-slate-200/50">
                   <button
                     type="button"
-                    onClick={() => setActiveQrCourse(item)}
+                    onClick={() => startAttendance(item)}
                     className="w-full py-2 px-3 bg-[#3256a8] hover:bg-[#2c4c96] active:scale-[0.98] text-white font-bold text-xs rounded-xl transition-all shadow-[0_2px_8px_0_rgba(50,86,168,0.25)] flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <QrCode className="w-3.5 h-3.5" />
@@ -154,65 +218,62 @@ export const FacultyDashboard: React.FC<FacultyDashboardProps> = ({
       {/* 2. TODAY AT A GLANCE: 4 Small Summary Cards              */}
       {/* ======================================================== */}
       <section aria-label="Today at a Glance" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1: Active Courses */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.04)] flex items-center justify-between">
-          <div className="space-y-1.5">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Active Courses
-            </span>
-            <div className="flex items-baseline gap-2 pt-0.5">
-              <span className="text-2xl font-extrabold text-slate-900 tracking-tight">4</span>
-              <span className="inline-flex items-center text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
-                no change
+        {[
+          {
+            label: 'Active Courses',
+            value: stats ? String(stats.activeCourses) : '—',
+            note: 'this semester',
+            noteClass: 'text-slate-500 bg-slate-100',
+          },
+          {
+            label: 'Total Students',
+            value: stats ? String(stats.totalStudents) : '—',
+            note: stats ? `across ${stats.activeCourses} course${stats.activeCourses === 1 ? '' : 's'}` : '',
+            noteClass: 'text-slate-500 bg-slate-100',
+          },
+          {
+            label: 'Pending Grades',
+            value: stats ? String(stats.pendingGrades) : '—',
+            note: stats && stats.pendingGrades > 0 ? 'action needed' : 'all caught up',
+            noteClass:
+              stats && stats.pendingGrades > 0
+                ? 'text-rose-600 bg-rose-50'
+                : 'text-emerald-600 bg-emerald-50',
+          },
+          {
+            label: 'Avg. Attendance Rate',
+            value: stats?.avgAttendance === null || stats === undefined ? '—' : `${stats.avgAttendance}%`,
+            note:
+              stats?.avgAttendance === null || stats === undefined
+                ? 'no data yet'
+                : stats.avgAttendance >= 75
+                ? 'above 75% threshold'
+                : 'below 75% threshold',
+            noteClass:
+              stats?.avgAttendance !== null && stats !== undefined && stats.avgAttendance >= 75
+                ? 'text-emerald-600 bg-emerald-50'
+                : 'text-amber-600 bg-amber-50',
+          },
+        ].map((card) => (
+          <div
+            key={card.label}
+            className="bg-white rounded-2xl p-5 border border-slate-100 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.04)] flex items-center justify-between"
+          >
+            <div className="space-y-1.5">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                {card.label}
               </span>
+              <div className="flex items-baseline gap-2 pt-0.5">
+                <span className="text-2xl font-extrabold text-slate-900 tracking-tight">{card.value}</span>
+                {card.note && (
+                  <span className={`inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full ${card.noteClass}`}>
+                    {card.note}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-
-        {/* Card 2: Total Students */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.04)] flex items-center justify-between">
-          <div className="space-y-1.5">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Total Students
-            </span>
-            <div className="flex items-baseline gap-2 pt-0.5">
-              <span className="text-2xl font-extrabold text-slate-900 tracking-tight">213</span>
-              <span className="inline-flex items-center text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
-                +12 ↑
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 3: Pending Grades */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.04)] flex items-center justify-between">
-          <div className="space-y-1.5">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Pending Grades
-            </span>
-            <div className="flex items-baseline gap-2 pt-0.5">
-              <span className="text-2xl font-extrabold text-slate-900 tracking-tight">38</span>
-              <span className="inline-flex items-center text-[11px] font-semibold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full">
-                action needed
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 4: Avg Attendance Rate */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.04)] flex items-center justify-between">
-          <div className="space-y-1.5">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Avg. Attendance Rate
-            </span>
-            <div className="flex items-baseline gap-2 pt-0.5">
-              <span className="text-2xl font-extrabold text-slate-900 tracking-tight">82%</span>
-              <span className="inline-flex items-center text-[11px] font-semibold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
-                -3% ↓
-              </span>
-            </div>
-          </div>
-        </div>
+        ))}
       </section>
 
       {/* ======================================================== */}
@@ -223,8 +284,12 @@ export const FacultyDashboard: React.FC<FacultyDashboardProps> = ({
         <div className="lg:col-span-4 bg-white rounded-3xl p-6 border border-slate-100 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.04)] flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-bold text-slate-900">My Courses Today</h3>
-              <span className="text-xs font-semibold text-slate-400">4 sessions</span>
+              <h3 className="text-base font-bold text-slate-900">
+                {scheduleIsToday ? 'My Courses Today' : `My Courses — ${scheduleDay}`}
+              </h3>
+              <span className="text-xs font-semibold text-slate-400">
+                {FACULTY_SCHEDULE.length} session{FACULTY_SCHEDULE.length === 1 ? '' : 's'}
+              </span>
             </div>
 
             <div className="space-y-3">
@@ -278,47 +343,35 @@ export const FacultyDashboard: React.FC<FacultyDashboardProps> = ({
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-bold text-slate-900">Pending Actions</h3>
               <span className="text-xs font-bold text-rose-500 bg-rose-50 px-2 py-0.5 rounded-full">
-                {FACULTY_PENDING_ACTIONS.length - Object.values(completedActions).filter(Boolean).length} to do
+                {FACULTY_PENDING_ACTIONS.length} to do
               </span>
             </div>
 
             <div className="space-y-3">
-              {FACULTY_PENDING_ACTIONS.map((action: any) => {
-                const isDone = completedActions[action.id];
-                return (
-                  <div
-                    key={action.id}
-                    className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
-                      isDone
-                        ? 'bg-slate-50 border-slate-100 opacity-60'
-                        : 'bg-white border-slate-100 hover:border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-start gap-2.5 min-w-0">
-                      <span className={`w-2.5 h-2.5 rounded-full mt-1.5 shrink-0 ${action.color}`} />
-                      <p
-                        className={`text-xs font-medium leading-snug ${
-                          isDone ? 'line-through text-slate-400' : 'text-slate-800'
-                        }`}
-                      >
-                        {action.text}
-                      </p>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => toggleAction(action.id)}
-                      className={`py-1.5 px-3 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-                        isDone
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                          : 'bg-[#3256a8] hover:bg-[#2c4c96] text-white shadow-xs'
-                      }`}
-                    >
-                      {isDone ? 'Done ✓' : 'Do Now'}
-                    </button>
+              {FACULTY_PENDING_ACTIONS.length === 0 && (
+                <p className="text-xs text-slate-500 py-4 text-center">
+                  Nothing pending — grades are entered and reviews are done.
+                </p>
+              )}
+              {FACULTY_PENDING_ACTIONS.map((action: any) => (
+                <div
+                  key={action.id}
+                  className="p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 bg-white border-slate-100 hover:border-slate-200"
+                >
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <span className={`w-2.5 h-2.5 rounded-full mt-1.5 shrink-0 ${action.color}`} />
+                    <p className="text-xs font-medium leading-snug text-slate-800">{action.text}</p>
                   </div>
-                );
-              })}
+
+                  <button
+                    type="button"
+                    onClick={() => action.targetTab && onNavigateTab && onNavigateTab(action.targetTab)}
+                    className="py-1.5 px-3 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer bg-[#3256a8] hover:bg-[#2c4c96] text-white shadow-xs"
+                  >
+                    {action.actionText ?? 'Do Now'}
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -446,7 +499,7 @@ export const FacultyDashboard: React.FC<FacultyDashboardProps> = ({
           <div className="bg-white rounded-3xl max-w-sm w-full p-6 border border-slate-100 shadow-2xl relative text-center animate-in zoom-in-95 duration-150">
             <button
               type="button"
-              onClick={() => setActiveQrCourse(null)}
+              onClick={closeQrModal}
               className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 cursor-pointer"
             >
               <X className="w-5 h-5" />
@@ -462,57 +515,56 @@ export const FacultyDashboard: React.FC<FacultyDashboardProps> = ({
               {activeQrCourse.code} · {activeQrCourse.room} · {activeQrCourse.time}
             </p>
 
-            {/* Simulated Live QR Display */}
+            {/* Live QR for the session just opened */}
             <div className="my-5 p-4 bg-white rounded-2xl border-2 border-dashed border-[#3256a8]/30 flex flex-col items-center justify-center">
-              <div className="w-44 h-44 bg-slate-900 p-3 rounded-2xl flex items-center justify-center relative overflow-hidden shadow-inner">
-                {/* SVG QR Code Pattern Mockup */}
-                <svg className="w-full h-full text-white" viewBox="0 0 100 100" fill="currentColor">
-                  {/* Outer corner anchors */}
-                  <rect x="5" y="5" width="26" height="26" rx="4" />
-                  <rect x="9" y="9" width="18" height="18" fill="#0f172a" />
-                  <rect x="13" y="13" width="10" height="10" />
-
-                  <rect x="69" y="5" width="26" height="26" rx="4" />
-                  <rect x="73" y="9" width="18" height="18" fill="#0f172a" />
-                  <rect x="77" y="13" width="10" height="10" />
-
-                  <rect x="5" y="69" width="26" height="26" rx="4" />
-                  <rect x="9" y="73" width="18" height="18" fill="#0f172a" />
-                  <rect x="13" y="77" width="10" height="10" />
-
-                  {/* Internal grid patterns */}
-                  <rect x="37" y="10" width="8" height="8" />
-                  <rect x="49" y="10" width="8" height="8" />
-                  <rect x="37" y="24" width="12" height="6" />
-                  <rect x="10" y="37" width="8" height="12" />
-                  <rect x="24" y="37" width="8" height="8" />
-                  <rect x="38" y="38" width="16" height="16" />
-                  <rect x="60" y="38" width="12" height="8" />
-                  <rect x="78" y="38" width="12" height="12" />
-                  <rect x="38" y="60" width="10" height="8" />
-                  <rect x="54" y="54" width="8" height="18" />
-                  <rect x="68" y="60" width="12" height="8" />
-                  <rect x="40" y="76" width="16" height="12" />
-                  <rect x="64" y="74" width="8" height="16" />
-                  <rect x="78" y="78" width="12" height="12" />
-                </svg>
-              </div>
-              <span className="text-[11px] font-mono font-bold text-slate-600 mt-2">
-                Session Code: CS201-{Math.floor(1000 + Math.random() * 9000)}
-              </span>
+              {qrError ? (
+                <p className="text-xs font-semibold text-rose-600 py-10">{qrError}</p>
+              ) : qrSession ? (
+                <>
+                  <div className="w-44 h-44 bg-white p-2 rounded-2xl flex items-center justify-center">
+                    <QRCodeSVG
+                      value={`${window.location.origin}/?attend=${encodeURIComponent(qrSession.qrToken)}`}
+                      size={256}
+                      level="M"
+                      fgColor="#0f172a"
+                      className="w-full h-full"
+                    />
+                  </div>
+                  <span className="text-[11px] font-mono font-bold text-slate-600 mt-2 break-all select-all px-2 text-center">
+                    {qrSession.qrToken}
+                  </span>
+                </>
+              ) : (
+                <div className="w-44 h-44 flex items-center justify-center">
+                  <div className="w-8 h-8 border-4 border-[#3256a8] border-t-transparent rounded-full animate-spin" />
+                </div>
+              )}
             </div>
 
             <p className="text-xs text-slate-500 mb-4">
-              Students can scan this directly from their Nilebyte Student mobile app to record their attendance.
+              Students scan this with their phone camera, or enter the token from their Home page. Hiding
+              this window keeps the session open; you can still end it from the Attendance tab.
             </p>
 
-            <button
-              type="button"
-              onClick={() => setActiveQrCourse(null)}
-              className="w-full py-2.5 px-4 bg-[#3256a8] hover:bg-[#2c4c96] text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer"
-            >
-              Close & Finish Session
-            </button>
+            {endError && <p className="text-xs font-semibold text-rose-600 mb-3">{endError}</p>}
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={closeQrModal}
+                className="flex-1 py-2.5 px-4 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold text-xs rounded-xl cursor-pointer"
+              >
+                Hide (keep open)
+              </button>
+              <button
+                type="button"
+                onClick={endQrSession}
+                disabled={!qrSession || closeSession.isPending}
+                className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer disabled:opacity-50"
+              >
+                {closeSession.isPending ? 'Ending…' : 'End Session'}
+              </button>
+            </div>
           </div>
         </div>
       )}

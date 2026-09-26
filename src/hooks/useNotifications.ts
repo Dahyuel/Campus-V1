@@ -16,6 +16,14 @@ export const useUnreadCount = () =>
     refetchInterval: 15000,
   });
 
+// Unread direct messages, for the sidebar's Messages badge
+export const useUnreadMessageCount = () =>
+  useQuery<number>({
+    queryKey: ['notifications', 'unread-messages'],
+    queryFn: () => api.get('/notifications/unread-messages').then((r) => r.data.count),
+    refetchInterval: 30000,
+  });
+
 export const useMarkRead = () => {
   const qc = useQueryClient();
   return useMutation({

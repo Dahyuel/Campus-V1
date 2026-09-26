@@ -12,16 +12,20 @@ import {
   RefreshCw,
   Copy
 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { StudentAttendanceSummary } from '../../data/facultyMockData';
 import {
   useFacultyCourses,
+  useFacultyProfile,
   useFacultyAttendanceSessions,
   useFacultyAttendanceSummary,
   useCreateAttendanceSession,
   useExtendAttendanceSession,
   useCloseAttendanceSession,
   useMarkAttendanceManual,
+  useLiveAttendance,
+  useSessionRoster,
 } from '../../hooks/useFacultyData';
 
 interface FacultyCourse {
@@ -41,13 +45,38 @@ interface ActiveSession {
 
 type ManualStatus = 'PRESENT' | 'ABSENT' | 'EXCUSED';
 
+interface PastSession {
+  id: string;
+  lectureNo: string;
+  date: string;
+  present: number;
+  absent: number;
+  rate: number;
+}
+
+const ROSTER_STATUS_CLASS: Record<string, string> = {
+  PRESENT: 'text-emerald-700 bg-emerald-100/70',
+  ABSENT: 'text-rose-700 bg-rose-100/70',
+  EXCUSED: 'text-amber-800 bg-amber-100/70',
+  'NOT RECORDED': 'text-slate-500 bg-slate-100',
+};
+
+const csvCell = (value: string | number | null) => {
+  const text = value === null ? '' : String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+};
+
 export const FacultyAttendanceTab: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const courseIdFromUrl = searchParams.get('courseId');
   const { data: coursesData } = useFacultyCourses();
   const courses: FacultyCourse[] = coursesData ?? [];
 
   // Bottom section - records for the selected course tab
-  const [selectedTabCourseId, setActiveCourseTab] = useState<string | null>(null);
-  const tabCourse = courses.find((c) => c.id === selectedTabCourseId) ?? courses[0] ?? null;
+  const [selectedTabCourseId, setActiveCourseTab] = useState<string | null>(courseIdFromUrl);
+  const defaultCourseId = useFacultyProfile().data?.preferences.defaultCourseId ?? null;
+  const defaultCourse = courses.find((c) => c.id === defaultCourseId) ?? courses[0] ?? null;
+  const tabCourse = courses.find((c) => c.id === selectedTabCourseId) ?? defaultCourse;
   const activeCourseId = tabCourse?.id ?? null;
   const activeCourseTab = tabCourse?.name ?? '';
   const { data: sessionsData } = useFacultyAttendanceSessions(activeCourseId);
@@ -58,8 +87,8 @@ export const FacultyAttendanceTab: React.FC = () => {
   const extendSession = useExtendAttendanceSession();
   const closeSession = useCloseAttendanceSession();
   const markManual = useMarkAttendanceManual();
-  const [selectedCourseId, setSelectedCourse] = useState<string | null>(null);
-  const qrCourse = courses.find((c) => c.id === selectedCourseId) ?? courses[0] ?? null;
+  const [selectedCourseId, setSelectedCourse] = useState<string | null>(courseIdFromUrl);
+  const qrCourse = courses.find((c) => c.id === selectedCourseId) ?? defaultCourse;
   const [selectedLecture, setSelectedLecture] = useState('');
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -71,8 +100,11 @@ export const FacultyAttendanceTab: React.FC = () => {
   const [manualStudentId, setManualStudentId] = useState('');
   const [manualStatus, setManualStatus] = useState<ManualStatus>('PRESENT');
 
+  const { data: live } = useLiveAttendance(activeSession?.sessionId ?? null);
+  const [rosterSessionId, setRosterSessionId] = useState<string | null>(null);
+  const { data: roster, isLoading: rosterLoading, isError: rosterError } = useSessionRoster(rosterSessionId);
   const studentSummaries: StudentAttendanceSummary[] = summaryData ?? [];
-  const PAST_ATTENDANCE_SESSIONS = sessionsData ?? [];
+  const PAST_ATTENDANCE_SESSIONS: PastSession[] = sessionsData ?? [];
 
   const timeLeft = activeSession
     ? Math.max(0, Math.round((new Date(activeSession.expiresAt).getTime() - now) / 1000))
@@ -94,6 +126,30 @@ export const FacultyAttendanceTab: React.FC = () => {
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  // Two sections in one file: session history, then the per-student summary.
+  const handleExportReport = () => {
+    if (!tabCourse) return;
+    const line = (cells: Array<string | number | null>) => cells.map(csvCell).join(',');
+    const lines = [
+      line([`Attendance report — ${tabCourse.code} ${tabCourse.name}`]),
+      '',
+      line(['Session', 'Date', 'Present', 'Absent', 'Rate %']),
+      ...PAST_ATTENDANCE_SESSIONS.map((s) => line([s.lectureNo, s.date, s.present, s.absent, s.rate])),
+      '',
+      line(['Student', 'Present', 'Absent', 'Rate %', 'Status']),
+      ...studentSummaries.map((s) => line([s.name, s.present, s.absent, s.rate, s.status])),
+    ];
+    // BOM so Excel reads UTF-8 names correctly
+    const csv = `﻿${lines.join('\r\n')}`;
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `attendance-${tabCourse.code.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast(`Exported ${PAST_ATTENDANCE_SESSIONS.length} sessions and ${studentSummaries.length} students to CSV`);
   };
 
   const checkInUrl = activeSession
@@ -258,23 +314,65 @@ export const FacultyAttendanceTab: React.FC = () => {
               <p className="text-xs font-semibold text-slate-600 mb-3">
                 {activeSession.courseName} · {activeSession.lectureLabel}
               </p>
-              {/* QR Code Container */}
-              <div className="p-4 bg-white rounded-3xl border-2 border-[#3256a8]/30 shadow-lg inline-block relative">
-                <div className="w-48 h-48 sm:w-56 sm:h-56 bg-white p-2 rounded-2xl flex items-center justify-center">
-                  <QRCodeSVG
-                    value={checkInUrl}
-                    size={256}
-                    level="M"
-                    fgColor="#0f172a"
-                    className={`w-full h-full ${timeLeft === 0 ? 'opacity-20' : ''}`}
-                  />
+              <div className="flex flex-col lg:flex-row items-center lg:items-start justify-center gap-6 w-full">
+                {/* QR Code Container */}
+                <div className="p-4 bg-white rounded-3xl border-2 border-[#3256a8]/30 shadow-lg inline-block relative shrink-0">
+                  <div className="w-48 h-48 sm:w-56 sm:h-56 bg-white p-2 rounded-2xl flex items-center justify-center">
+                    <QRCodeSVG
+                      value={checkInUrl}
+                      size={256}
+                      level="M"
+                      fgColor="#0f172a"
+                      className={`w-full h-full ${timeLeft === 0 ? 'opacity-20' : ''}`}
+                    />
+                  </div>
+                  <div
+                    className={`absolute -top-2.5 -right-2.5 px-2.5 py-0.5 text-white font-extrabold text-[10px] rounded-full uppercase tracking-wider shadow-xs ${
+                      timeLeft > 0 ? 'bg-emerald-500' : 'bg-slate-400'
+                    }`}
+                  >
+                    {timeLeft > 0 ? 'Active' : 'Expired'}
+                  </div>
                 </div>
-                <div
-                  className={`absolute -top-2.5 -right-2.5 px-2.5 py-0.5 text-white font-extrabold text-[10px] rounded-full uppercase tracking-wider shadow-xs ${
-                    timeLeft > 0 ? 'bg-emerald-500' : 'bg-slate-400'
-                  }`}
-                >
-                  {timeLeft > 0 ? 'Active' : 'Expired'}
+
+                {/* Live check-ins, refreshed every few seconds */}
+                <div className="w-full lg:w-72 bg-white rounded-3xl border border-slate-200 p-4 text-left">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                      Checked in
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-emerald-700">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      LIVE
+                    </span>
+                  </div>
+                  <p className="text-2xl font-extrabold text-slate-900 tracking-tight">
+                    {live?.presentCount ?? 0}
+                    <span className="text-sm font-bold text-slate-400"> / {live?.totalStudents ?? 0}</span>
+                  </p>
+
+                  <div className="mt-3 max-h-48 overflow-y-auto divide-y divide-slate-100">
+                    {(live?.present ?? []).length === 0 ? (
+                      <p className="text-[11px] text-slate-500 py-3">
+                        Waiting for the first student to scan…
+                      </p>
+                    ) : (
+                      (live?.present ?? []).map((student) => (
+                        <div key={student.id} className="flex items-center justify-between py-1.5 gap-2">
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-bold text-slate-800 truncate">{student.name}</p>
+                            <p className="text-[10px] text-slate-400">{student.studentId}</p>
+                          </div>
+                          <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                            {new Date(student.markedAt).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -398,7 +496,7 @@ export const FacultyAttendanceTab: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200/60 text-xs text-slate-700">
-                    {PAST_ATTENDANCE_SESSIONS.map((sess: any) => (
+                    {PAST_ATTENDANCE_SESSIONS.map((sess) => (
                       <tr key={sess.id} className="hover:bg-white/80 transition-colors">
                         <td className="py-3 px-3 font-bold text-slate-900">{sess.lectureNo}</td>
                         <td className="py-3 px-3 text-slate-500">{sess.date}</td>
@@ -408,7 +506,7 @@ export const FacultyAttendanceTab: React.FC = () => {
                         <td className="py-3 px-3 text-right">
                           <button
                             id={`btn-view-details-${sess.id}`}
-                            onClick={() => showToast(`Opened roster log for ${sess.lectureNo}`)}
+                            onClick={() => setRosterSessionId(sess.id)}
                             className="px-2.5 py-1 bg-white border border-slate-200 hover:border-[#3256a8] hover:text-[#3256a8] rounded-lg font-bold text-[11px] transition-all cursor-pointer"
                           >
                             View Details
@@ -424,8 +522,9 @@ export const FacultyAttendanceTab: React.FC = () => {
             <div className="mt-5 pt-4 border-t border-slate-200/60">
               <button
                 id="btn-export-attendance-report"
-                onClick={() => showToast('Attendance report exported to CSV')}
-                className="w-full py-2.5 bg-white border border-slate-200 hover:border-[#3256a8] hover:text-[#3256a8] text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                onClick={handleExportReport}
+                disabled={!tabCourse || (PAST_ATTENDANCE_SESSIONS.length === 0 && studentSummaries.length === 0)}
+                className="w-full py-2.5 bg-white border border-slate-200 hover:border-[#3256a8] hover:text-[#3256a8] text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Export Attendance Report</span>
@@ -513,6 +612,88 @@ export const FacultyAttendanceTab: React.FC = () => {
           </div>
         </div>
       </section>
+
+      {/* Session Roster Modal */}
+      {rosterSessionId && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-lg w-full max-h-[85vh] flex flex-col border border-slate-100 shadow-2xl animate-in zoom-in-95 duration-150">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm">{roster?.lectureLabel ?? 'Session roster'}</h3>
+                {roster && (
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {roster.date} · {roster.presentCount} present · {roster.absentCount} absent
+                    {roster.isOpen ? ' · session still open' : ''}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => setRosterSessionId(null)}
+                aria-label="Close roster"
+                className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {rosterLoading ? (
+              <div className="flex justify-center py-10">
+                <div className="w-8 h-8 border-4 border-[#3256a8] border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : rosterError || !roster ? (
+              <p className="text-xs font-semibold text-rose-600 py-6 text-center">Could not load this roster.</p>
+            ) : (
+              <>
+                {!roster.hasRecords && (
+                  <p className="text-xs text-slate-600 bg-slate-50 border border-slate-100 rounded-xl p-3 mb-3">
+                    Only the totals were recorded for this session, so there is no per-student log.
+                  </p>
+                )}
+                <div className="overflow-y-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200/80 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                        <th className="py-2 px-2">Student</th>
+                        <th className="py-2 px-2">ID</th>
+                        <th className="py-2 px-2">Checked in</th>
+                        <th className="py-2 px-2 text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200/60 text-xs text-slate-700">
+                      {roster.students.map((s) => (
+                        <tr key={s.id}>
+                          <td className="py-2 px-2 font-bold text-slate-900">{s.name}</td>
+                          <td className="py-2 px-2 font-mono text-slate-500">{s.studentId}</td>
+                          <td className="py-2 px-2 text-slate-500">
+                            {s.markedAt
+                              ? new Date(s.markedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
+                                (s.method ? ` · ${s.method}` : '')
+                              : '—'}
+                          </td>
+                          <td className="py-2 px-2 text-right">
+                            <span
+                              className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${ROSTER_STATUS_CLASS[s.status] ?? ''}`}
+                            >
+                              {s.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                      {roster.students.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="py-6 text-center text-slate-500">
+                            No students enrolled.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Manual Mark Modal */}
       {isManualModalOpen && (
